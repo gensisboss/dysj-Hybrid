@@ -1,0 +1,14 @@
+{
+    "name": "Hybrid.Bootstrap",
+    "rootNamespace": "DYSJ.HotUpdate.Bootstrap",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

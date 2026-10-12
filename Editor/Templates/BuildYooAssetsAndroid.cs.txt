@@ -1,0 +1,222 @@
+namespace Native.Editor
+{
+    using System;
+    using System.Linq;
+    using Res;
+    using UnityEditor;
+    using UnityEngine;
+    using YooAsset;          // EBuildBundleType / EFileNameStyle 在 Runtime 命名空间
+    using YooAsset.Editor;   // 构建参数与管线在 Editor 命名空间
+
+    /// <summary>
+    /// native 工程（Unity 2022.1.25f1）的 YooAsset 资源包构建入口。
+    ///
+    /// 团结侧的 Assets/Tools/Editor/Build/BuildYooAssets.cs 走的是 BuildTarget.MiniGame，
+    /// 且整个 Assets/Tools/Editor 都不迁移，因此由本脚本替代，构建参数与团结侧保持一致。
+    /// 本文件位于 Assets/_Native/ —— migration-tool 的 native-only 保护区，不会被迁移覆盖。
+    ///
+    ///     Unity.exe -batchmode -quit -projectPath &lt;工程&gt; \
+    ///               -executeMethod Native.Editor.BuildYooAssetsAndroid.Build \
+    ///               -assetVersion 20260817203000 \
+    ///               [-packages Game,Config] [-buildTarget Android|iOS]
+    ///
+    /// 产物落在 &lt;工程&gt;/Bundles/&lt;BuildTarget&gt;/&lt;包名&gt;/&lt;assetVersion&gt;/。
+    /// </summary>
+    internal static class BuildYooAssetsAndroid
+    {
+        public static void Build()
+        {
+            try
+            {
+                var version = GetArg("-assetVersion");
+                if (string.IsNullOrWhiteSpace(version))
+                {
+                    Debug.LogError("[BuildYooAssetsAndroid] 缺少 -assetVersion 参数，无法确定资源包版本号。");
+                    Exit(1);
+                    return;
+                }
+
+                var target = ResolveTarget();
+                var packages = ResolvePackages();
+                if (packages.Length == 0)
+                {
+                    Debug.LogError("[BuildYooAssetsAndroid] 没有可构建的资源包，请检查 -packages 参数。");
+                    Exit(1);
+                    return;
+                }
+
+                var group = BuildPipeline.GetBuildTargetGroup(target);
+                EditorUserBuildSettings.SwitchActiveBuildTarget(group, target);
+
+                // A Config-only publication must not rebuild unrelated hot-update code.
+                if (packages.Contains(PackageConfig.Templates[PackageType.Game].PackageName, StringComparer.Ordinal))
+                    Hybrid.HybridBuildBridge.PrepareAssetBuild(target);
+
+                Debug.Log($"[BuildYooAssetsAndroid] 目标={target} 版本={version} " +
+                          $"资源包={string.Join(", ", packages)}");
+
+                foreach (var package in packages)
+                {
+                    if (!BuildPackage(target, package, version))
+                    {
+                        Exit(1);
+                        return;
+                    }
+                }
+
+                Debug.Log($"[BuildYooAssetsAndroid] 全部资源包构建成功：{string.Join(", ", packages)}");
+                Exit(0);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[BuildYooAssetsAndroid] 构建异常: {e}");
+                Exit(1);
+            }
+        }
+
+        internal static bool BuildGameHotUpdate(string version, string outputDirectory)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(version))
+                    throw new ArgumentException("业务热更新版本号不能为空", nameof(version));
+
+                const BuildTarget target = BuildTarget.Android;
+                var group = BuildPipeline.GetBuildTargetGroup(target);
+                if (EditorUserBuildSettings.activeBuildTarget != target
+                    && !EditorUserBuildSettings.SwitchActiveBuildTarget(group, target))
+                    throw new InvalidOperationException("无法切换 Android Build Target");
+
+                Hybrid.HybridBuildBridge.PrepareAssetBuild(target);
+                var packageName = PackageConfig.Templates[PackageType.Game].PackageName;
+                if (!BuildPackage(target, packageName, version.Trim(), outputDirectory))
+                    throw new InvalidOperationException("Game 资源包构建失败");
+
+                Debug.Log($"[BuildYooAssetsAndroid] 业务热更新一键生成完成: " +
+                          $"version={version.Trim()}, output={outputDirectory}");
+                return true;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError("[BuildYooAssetsAndroid] 业务热更新生成失败: " + exception);
+                return false;
+            }
+        }
+
+        // ---------------------------------------------------------- 构建
+
+        static bool BuildPackage(
+            BuildTarget target,
+            string packageName,
+            string version,
+            string businessOutputDirectory = null)
+        {
+            Debug.Log($"[BuildYooAssetsAndroid] 开始构建资源包: {packageName} ({target})");
+
+            // 构建参数与团结侧 BuildYooAssets.BuildInternal 保持一致，只有 BuildTarget 不同
+            var buildParameters = new ScriptableBuildParameters
+            {
+                BuildOutputRoot = AssetBundleBuilderHelper.GetDefaultBuildOutputRoot(),
+                BuildinFileRoot = AssetBundleBuilderHelper.GetStreamingAssetsRoot(),
+                BuildPipeline = EBuildPipeline.ScriptableBuildPipeline.ToString(),
+                BuildBundleType = (int)EBuildBundleType.AssetBundle,
+                BuildTarget = target,
+                PackageName = packageName,
+                PackageVersion = version,
+                VerifyBuildingResult = true,
+                EnableSharePackRule = true, // 共享资源构建模式，兼容 1.5x
+                FileNameStyle = EFileNameStyle.HashName,
+                BuildinFileCopyOption = EBuildinFileCopyOption.None,
+                BuildinFileCopyParams = string.Empty,
+                CompressOption = ECompressOption.LZ4,
+                ClearBuildCacheFiles = false, // 保留缓存，启用增量构建
+                UseAssetDependencyDB = true,
+            };
+
+            var pipeline = new ScriptableBuildPipeline();
+            var buildResult = pipeline.Run(buildParameters, true);
+
+            if (buildResult.Success)
+            {
+                if (string.Equals(packageName, PackageConfig.Templates[PackageType.Game].PackageName, StringComparison.Ordinal))
+                {
+                    var outputDirectory = string.IsNullOrWhiteSpace(businessOutputDirectory)
+                        ? System.IO.Path.Combine(buildResult.OutputPackageDirectory, "BusinessCode")
+                        : businessOutputDirectory;
+                    Hybrid.HybridBuildBridge.ExportBusinessHotUpdate(target, version, outputDirectory);
+                }
+                Debug.Log($"[BuildYooAssetsAndroid] 构建成功: {packageName} " +
+                          $"{buildResult.OutputPackageDirectory}");
+                return true;
+            }
+
+            Debug.LogError($"[BuildYooAssetsAndroid] 构建失败: {packageName} {buildResult.ErrorInfo}");
+            return false;
+        }
+
+        // ---------------------------------------------------------- 参数解析
+
+        static BuildTarget ResolveTarget()
+        {
+            var value = GetArg("-buildTarget");
+            if (!string.IsNullOrWhiteSpace(value) &&
+                value.Equals("iOS", StringComparison.OrdinalIgnoreCase))
+                return BuildTarget.iOS;
+            return BuildTarget.Android;
+        }
+
+        /// <summary>
+        /// 未指定 -packages 时取 <see cref="PackageConfig.BootstrapOrder"/>（Game、Config）。
+        /// 指定时按包名校验，写错名字直接失败，避免出一个少包的版本。
+        /// </summary>
+        static string[] ResolvePackages()
+        {
+            var known = PackageConfig.Templates.Values
+                .Select(p => p.PackageName)
+                .ToArray();
+
+            var value = GetArg("-packages");
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return PackageConfig.BootstrapOrder
+                    .Select(type => PackageConfig.Templates[type].PackageName)
+                    .ToArray();
+            }
+
+            var requested = value
+                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .Where(s => s.Length > 0)
+                .ToArray();
+
+            var unknown = requested
+                .Where(name => !known.Contains(name, StringComparer.Ordinal))
+                .ToArray();
+            if (unknown.Length > 0)
+            {
+                Debug.LogError($"[BuildYooAssetsAndroid] 未知的资源包名: {string.Join(", ", unknown)}，" +
+                               $"可选: {string.Join(", ", known)}");
+                return Array.Empty<string>();
+            }
+
+            return requested;
+        }
+
+        static string GetArg(string name)
+        {
+            var args = Environment.GetCommandLineArgs();
+            for (var i = 0; i < args.Length - 1; i++)
+            {
+                if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+                    return args[i + 1];
+            }
+            return null;
+        }
+
+        static void Exit(int code)
+        {
+            if (Application.isBatchMode)
+                EditorApplication.Exit(code);
+        }
+    }
+}

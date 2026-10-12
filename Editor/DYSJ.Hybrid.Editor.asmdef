@@ -1,0 +1,16 @@
+{
+  "name": "DYSJ.Hybrid.Editor",
+  "rootNamespace": "Native.Editor.Hybrid",
+  "references": [],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

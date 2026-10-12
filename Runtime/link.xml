@@ -1,0 +1,5 @@
+<linker>
+  <assembly fullname="HybridCLR.Runtime">
+    <type fullname="HybridCLR.RuntimeApi" preserve="all" />
+  </assembly>
+</linker>

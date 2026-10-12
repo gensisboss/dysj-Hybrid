@@ -1,0 +1,67 @@
+using System;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using MonoHook;
+using UnityEditor;
+using UnityEngine;
+
+namespace HybridCLR.MonoHook
+{
+#if UNITY_2022 || UNITY_2023_1_OR_NEWER
+    [InitializeOnLoad]
+    public class GetIl2CppFolderHook
+    {
+        private static MethodHook _hook;
+
+        static GetIl2CppFolderHook()
+        {
+            if (_hook != null)
+                return;
+
+            Type type = typeof(EditorApplication).Assembly.GetType("UnityEditorInternal.IL2CPPUtils");
+            if (type == null)
+                throw new TypeLoadException("UnityEditorInternal.IL2CPPUtils");
+
+            MethodInfo miTarget = type.GetMethod("GetIl2CppFolder", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public, null,
+                new[] { typeof(bool).MakeByRefType() }, null);
+
+            // Unity 2022.1 exposes only GetIl2CppFolder(). That implementation already
+            // honors UNITY_IL2CPP_PATH, so the development-location hook is unnecessary.
+            if (miTarget == null)
+            {
+                MethodInfo parameterless = type.GetMethod("GetIl2CppFolder", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public, null,
+                    Type.EmptyTypes, null);
+                if (parameterless != null)
+                {
+                    Debug.Log("[HybridCLR] GetIl2CppFolder(out bool) is unavailable; using the native UNITY_IL2CPP_PATH path override.");
+                    return;
+                }
+                throw new MissingMethodException(type.FullName, "GetIl2CppFolder");
+            }
+
+            MethodInfo miReplacement = new StripAssembliesDel(OverrideMethod).Method;
+            MethodInfo miProxy = new StripAssembliesDel(PlaceHolderMethod).Method;
+
+            _hook = new MethodHook(miTarget, miReplacement, miProxy);
+            _hook.Install();
+        }
+
+        private delegate string StripAssembliesDel(out bool isDevelopmentLocation);
+
+        private static string OverrideMethod(out bool isDevelopmentLocation)
+        {
+            string result = PlaceHolderMethod(out isDevelopmentLocation);
+            isDevelopmentLocation = false;
+            return result;
+        }
+
+        [MethodImpl(MethodImplOptions.NoOptimization)]
+        private static string PlaceHolderMethod(out bool isDevelopmentLocation)
+        {
+            Debug.LogError("[GetIl2CppFolderHook] PlaceHolderMethod");
+            isDevelopmentLocation = false;
+            return null;
+        }
+    }
+#endif
+}

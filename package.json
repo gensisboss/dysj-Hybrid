@@ -1,0 +1,10 @@
+{
+  "name": "com.dysj.hybrid",
+  "version": "1.0.1",
+  "displayName": "DYSJ Hybrid Hot Update",
+  "description": "Project recovery and publishing tools for the DYSJ HybridCLR business hot-update workflow.",
+  "unity": "2022.1",
+  "author": {
+    "name": "DYSJ"
+  }
+}
