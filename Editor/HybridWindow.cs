@@ -69,7 +69,6 @@ namespace Native.Editor.Hybrid
                     settings.androidSdkRoot = EditorGUILayout.TextField("Android SDK 路径", settings.androidSdkRoot);
                     settings.mainScenePath = EditorGUILayout.TextField("业务主场景", settings.mainScenePath);
                     settings.businessStartupType = EditorGUILayout.TextField("启动类型", settings.businessStartupType);
-                    settings.businessValidationType = EditorGUILayout.TextField("业务校验类型", settings.businessValidationType);
                     settings.businessRemoteTimeoutSeconds = EditorGUILayout.IntSlider(
                         "请求超时（秒）",
                         settings.businessRemoteTimeoutSeconds,

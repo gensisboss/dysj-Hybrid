@@ -93,7 +93,6 @@ namespace DYSJ.HotUpdate.Bootstrap
 
                 var assembly = Assembly.Load(assemblyBytes);
                 ValidateRequiredType(assembly, config.startupTypeName, "启动");
-                ValidateRequiredType(assembly, config.validationTypeName, "业务校验");
 
                 Debug.Log("[Hybrid] 业务程序集已加载并接管: " + BusinessAssemblyName);
             }
@@ -483,7 +482,6 @@ namespace DYSJ.HotUpdate.Bootstrap
             public string latestManifest;
             public string mainSceneName;
             public string startupTypeName;
-            public string validationTypeName;
             public string cacheFolder;
             public int timeoutSeconds;
         }

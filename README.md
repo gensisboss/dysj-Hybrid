@@ -77,7 +77,7 @@ flowchart LR
 - CDN 版本与 APK 内置版本不同时，下载远端 DLL 并校验平台、长度和 SHA-256；成功后写入缓存并加载。
 - CDN 版本与 APK 内置版本相同时，直接使用 APK 默认 DLL。
 - CDN 请求、下载或校验失败时，尝试已校验的本地缓存；缓存也不可用时使用 APK 默认 DLL。
-- DLL 加载后验证配置的启动类型和业务校验类型，确认程序集正确，最后从内置 AssetBundle 打开业务主场景。
+- DLL 加载后验证配置的启动类型，确认程序集正确，最后从内置 AssetBundle 打开业务主场景。
 
 这种设计保证了更新失败不影响基础版本启动，同时确保业务场景不会在动态程序集接管前执行。
 
@@ -159,5 +159,5 @@ flowchart TD
 11. 稳定项目建议通过 Git 标签安装，而不是长期跟随 `main`：
 
 ```text
-https://github.com/gensisboss/dysj-Hybrid.git#v1.0.2
+https://github.com/gensisboss/dysj-Hybrid.git#v1.0.3
 ```

@@ -235,7 +235,6 @@ namespace Native.Editor.Hybrid
                 latestManifest = "business_latest.json",
                 mainSceneName = Path.GetFileNameWithoutExtension(settings.mainScenePath),
                 startupTypeName = (settings.businessStartupType ?? string.Empty).Trim(),
-                validationTypeName = (settings.businessValidationType ?? string.Empty).Trim(),
                 cacheFolder = "HybridCLRBusiness",
                 timeoutSeconds = Math.Max(3, Math.Min(60, settings.businessRemoteTimeoutSeconds)),
             };
@@ -543,7 +542,6 @@ namespace Native.Editor.Hybrid
             public string latestManifest;
             public string mainSceneName;
             public string startupTypeName;
-            public string validationTypeName;
             public string cacheFolder;
             public int timeoutSeconds;
         }
