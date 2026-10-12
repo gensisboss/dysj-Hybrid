@@ -49,9 +49,7 @@ namespace Native.Editor.Hybrid
 
             EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("业务热更新配置", EditorStyles.boldLabel);
-            settings.businessRemoteEnabled = EditorGUILayout.Toggle("启用 CDN 热更新", settings.businessRemoteEnabled);
-            using (new EditorGUI.DisabledScope(!settings.businessRemoteEnabled))
-                settings.businessRemoteRoot = EditorGUILayout.TextField("CDN 根地址", settings.businessRemoteRoot);
+            settings.businessRemoteRoot = EditorGUILayout.TextField("CDN 根地址", settings.businessRemoteRoot);
             EditorGUILayout.LabelField("APK 当前版本", PlayerSettings.bundleVersion);
             using (new EditorGUILayout.HorizontalScope())
             {

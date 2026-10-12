@@ -230,7 +230,6 @@ namespace Native.Editor.Hybrid
             EnsureAssetDirectory(Path.GetDirectoryName(assetPath)?.Replace('\\', '/') ?? "Assets/Resources");
             var config = new BusinessBootstrapConfig
             {
-                remoteEnabled = settings.businessRemoteEnabled,
                 remoteRoot = (settings.businessRemoteRoot ?? string.Empty).Trim().TrimEnd('/'),
                 latestManifest = "business_latest.json",
                 mainSceneName = Path.GetFileNameWithoutExtension(settings.mainScenePath),
@@ -502,9 +501,8 @@ namespace Native.Editor.Hybrid
                 throw new InvalidOperationException("HybridCLR Package Spec 不能为空");
             if (!string.Equals(settings.businessAssemblyName, "Assembly-CSharp", StringComparison.Ordinal))
                 throw new InvalidOperationException("当前业务热更新程序集必须为 Assembly-CSharp");
-            if (settings.businessRemoteEnabled
-                && (!Uri.TryCreate(settings.businessRemoteRoot, UriKind.Absolute, out var businessUri)
-                    || (businessUri.Scheme != Uri.UriSchemeHttp && businessUri.Scheme != Uri.UriSchemeHttps)))
+            if (!Uri.TryCreate(settings.businessRemoteRoot, UriKind.Absolute, out var businessUri)
+                || (businessUri.Scheme != Uri.UriSchemeHttp && businessUri.Scheme != Uri.UriSchemeHttps))
                 throw new InvalidOperationException("Business CDN Root 必须是有效的 HTTP/HTTPS 地址");
             if (!HybridAndroidSdk.Validate(settings, out var androidSdkProblem))
                 throw new InvalidOperationException(androidSdkProblem);
@@ -536,7 +534,6 @@ namespace Native.Editor.Hybrid
         [Serializable]
         sealed class BusinessBootstrapConfig
         {
-            public bool remoteEnabled;
             public string remoteRoot;
             public string latestManifest;
             public string mainSceneName;

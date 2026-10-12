@@ -7,7 +7,6 @@ namespace Native.Editor.Hybrid
     [FilePath("ProjectSettings/HybridSettings.asset", FilePathAttribute.Location.ProjectFolder)]
     internal sealed class HybridSettings : ScriptableSingleton<HybridSettings>
     {
-        public bool businessRemoteEnabled = true;
         public string businessRemoteRoot = "https://resource.dongyoushixian.com/kele/gh/android";
         public int businessRemoteTimeoutSeconds = 12;
         public string businessPublishVersion = "";

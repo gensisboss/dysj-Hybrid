@@ -58,7 +58,7 @@ namespace DYSJ.HotUpdate.Bootstrap
 
             byte[] assemblyBytes = null;
             var remoteMatchesEmbedded = false;
-            if (config.remoteEnabled && !string.IsNullOrWhiteSpace(config.remoteRoot))
+            if (!string.IsNullOrWhiteSpace(config.remoteRoot))
             {
                 yield return TryLoadRemote(
                     config,
@@ -465,7 +465,6 @@ namespace DYSJ.HotUpdate.Bootstrap
         [Serializable]
         sealed class BootstrapConfig
         {
-            public bool remoteEnabled;
             public string remoteRoot;
             public string latestManifest;
             public string mainSceneName;
