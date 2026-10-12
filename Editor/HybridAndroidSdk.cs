@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -258,8 +259,13 @@ namespace Native.Editor.Hybrid
 
         public static bool Validate(HybridSettings settings, out string problem)
         {
-            var sdkRoot = settings.GetAndroidSdkRoot();
-            if (string.IsNullOrWhiteSpace(sdkRoot) || !Directory.Exists(sdkRoot))
+            var sdkRoot = GetAndroidSdkRoot();
+            if (string.IsNullOrWhiteSpace(sdkRoot))
+            {
+                problem = "请先在 Unity Preferences > External Tools 中配置 Android SDK";
+                return false;
+            }
+            if (!Directory.Exists(sdkRoot))
             {
                 problem = "Android SDK 目录不存在: " + sdkRoot;
                 return false;
@@ -306,7 +312,7 @@ namespace Native.Editor.Hybrid
         public static void PatchGeneratedProject(string generatedPath)
         {
             var settings = HybridSettings.instance;
-            var sdkRoot = settings.GetAndroidSdkRoot();
+            var sdkRoot = GetAndroidSdkRoot();
             if (!Validate(settings, out var problem))
                 throw new InvalidOperationException(problem);
 
@@ -331,7 +337,7 @@ namespace Native.Editor.Hybrid
 
         public static void ConfigureUnityEditor(HybridSettings settings)
         {
-            var sdkRoot = settings.GetAndroidSdkRoot();
+            var sdkRoot = GetAndroidSdkRoot();
             if (!Validate(settings, out var problem))
                 throw new InvalidOperationException(problem);
             var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
@@ -457,6 +463,24 @@ namespace Native.Editor.Hybrid
         static string EscapeLocalPropertiesPath(string path)
         {
             return path.Replace("\\", "\\\\").Replace(":", "\\:");
+        }
+
+        static string GetAndroidSdkRoot()
+        {
+            const string typeName = "UnityEditor.Android.AndroidExternalToolsSettings";
+            var toolsType = Type.GetType(typeName + ", UnityEditor.Android.Extensions", false)
+                            ?? AppDomain.CurrentDomain.GetAssemblies()
+                                .Select(assembly => assembly.GetType(typeName, false))
+                                .FirstOrDefault(type => type != null);
+            var property = toolsType?.GetProperty(
+                "sdkRootPath",
+                BindingFlags.Public | BindingFlags.Static);
+            var configured = property?.GetValue(null) as string;
+            if (string.IsNullOrWhiteSpace(configured))
+                return string.Empty;
+
+            configured = Environment.ExpandEnvironmentVariables(configured.Trim());
+            return Path.GetFullPath(configured);
         }
     }
 

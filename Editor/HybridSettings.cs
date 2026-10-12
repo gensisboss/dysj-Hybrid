@@ -7,7 +7,6 @@ namespace Native.Editor.Hybrid
     [FilePath("ProjectSettings/HybridSettings.asset", FilePathAttribute.Location.ProjectFolder)]
     internal sealed class HybridSettings : ScriptableSingleton<HybridSettings>
     {
-        public string androidSdkRoot = "";
         public bool businessRemoteEnabled = true;
         public string businessRemoteRoot = "https://resource.dongyoushixian.com/kele/gh/android";
         public int businessRemoteTimeoutSeconds = 12;
@@ -31,14 +30,6 @@ namespace Native.Editor.Hybrid
         public string runtimeResourcePrefix => "HybridCLR";
         public string collectorSettingsPath => "Assets/AssetBundleCollectorSetting.asset";
         public string patchAotAssemblies => "mscorlib.dll\nSystem.dll\nSystem.Core.dll\nDOTween.dll\nNewtonsoft.Json.dll\nUnity.TextMeshPro.dll\nUnityEngine.CoreModule.dll\nUnityEngine.JSONSerializeModule.dll\nUnityEngine.UI.dll\nYooAsset.dll\nprotobuf-net.dll\nspine-csharp.dll";
-
-        public string GetAndroidSdkRoot()
-        {
-            var configured = Environment.ExpandEnvironmentVariables((androidSdkRoot ?? string.Empty).Trim());
-            if (string.IsNullOrEmpty(configured))
-                configured = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Android", "Sdk");
-            return Path.GetFullPath(configured);
-        }
 
         public string GetBusinessOutputRoot()
         {

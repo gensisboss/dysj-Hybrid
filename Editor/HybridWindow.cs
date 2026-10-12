@@ -66,7 +66,6 @@ namespace Native.Editor.Hybrid
             {
                 using (new EditorGUI.IndentLevelScope())
                 {
-                    settings.androidSdkRoot = EditorGUILayout.TextField("Android SDK 路径", settings.androidSdkRoot);
                     settings.mainScenePath = EditorGUILayout.TextField("业务主场景", settings.mainScenePath);
                     settings.businessRemoteTimeoutSeconds = EditorGUILayout.IntSlider(
                         "请求超时（秒）",
