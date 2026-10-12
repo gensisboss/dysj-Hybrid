@@ -17,6 +17,7 @@ namespace Native.Editor.Hybrid
             if (target != BuildTarget.Android)
                 return;
             HybridRuntimeCompatibility.EnsureInstalledRuntime();
+            HybridAndroidSdk.EnsureHybridClrRuntimeLinkXml();
             Invoke("GenerateAllAndPrepareHostBuild");
             HybridAndroidSdk.StampEmbeddedBusinessVersion(HybridSettings.instance);
             HybridAndroidSdk.SyncBootstrapResources(HybridSettings.instance, true);

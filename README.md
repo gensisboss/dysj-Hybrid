@@ -95,7 +95,7 @@ flowchart LR
 | `Assets/Resources/HybridCLR/` | 将上一项同步为 APK 内置资源，供启动器通过 `Resources.Load` 读取。 |
 | `Assets/StreamingAssets/HybridCLR/hybrid_main_scene.bundle` | 保存独立构建的业务主场景包，避免该场景引用导致 `Assembly-CSharp` 被静态打进 IL2CPP。 |
 | `Assets/AssetBundleCollectorSetting.asset` | 在 YooAsset `Game` Package 下创建或更新 `hybridclr` 收集组。 |
-| `Assets/link.xml` | 移除对 `Assembly-CSharp` 的 AOT 保留项，防止动态业务程序集被提前编译进宿主。 |
+| `Assets/link.xml` | 移除对 `Assembly-CSharp` 的 AOT 保留项，并确保保留 `HybridCLR.RuntimeApi`，防止动态业务程序集被提前编译进宿主或被 Unity Linker 漏掉。 |
 | Build Settings | 将启动场景放在首位；实际构建 Android 时进一步只把启动场景交给 Unity，业务场景改由内置 AssetBundle 加载。 |
 | Player Settings 与 Android Gradle | 强制 Android 使用 IL2CPP，校验外部 SDK，并修正 `compileSdk`、Build Tools 和 `sdk.dir`。 |
 
@@ -159,5 +159,5 @@ flowchart TD
 11. 稳定项目建议通过 Git 标签安装，而不是长期跟随 `main`：
 
 ```text
-https://github.com/gensisboss/dysj-Hybrid.git#v1.0.1
+https://github.com/gensisboss/dysj-Hybrid.git#v1.0.2
 ```

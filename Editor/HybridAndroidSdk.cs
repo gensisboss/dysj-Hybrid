@@ -18,6 +18,9 @@ namespace Native.Editor.Hybrid
     internal static class HybridAndroidSdk
     {
         const int MinimumCompileSdkVersion = 31;
+        const string LinkXmlAssetPath = "Assets/link.xml";
+        const string HybridClrRuntimeAssemblyName = "HybridCLR.Runtime";
+        const string HybridClrRuntimeApiTypeName = "HybridCLR.RuntimeApi";
 
         public static void StampEmbeddedBusinessVersion(HybridSettings settings)
         {
@@ -46,7 +49,7 @@ namespace Native.Editor.Hybrid
         public static void RemoveBusinessAssemblyFromLinkXml(HybridSettings settings)
         {
             var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-            var linkXmlPath = Path.Combine(projectRoot, "Assets", "link.xml");
+            var linkXmlPath = Path.Combine(projectRoot, LinkXmlAssetPath.Replace('/', Path.DirectorySeparatorChar));
             if (!File.Exists(linkXmlPath))
                 return;
 
@@ -67,6 +70,113 @@ namespace Native.Editor.Hybrid
                 document.Save(writer, SaveOptions.DisableFormatting);
 
             Debug.LogWarning($"[Hybrid] 已从 Assets/link.xml 移除 {settings.businessAssemblyName}；业务热更新程序集不能作为 AOT 根程序集保留。");
+        }
+
+        public static void EnsureHybridClrRuntimeLinkXml()
+        {
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var linkXmlPath = Path.Combine(projectRoot, LinkXmlAssetPath.Replace('/', Path.DirectorySeparatorChar));
+            var document = File.Exists(linkXmlPath)
+                ? XDocument.Load(linkXmlPath, LoadOptions.PreserveWhitespace)
+                : new XDocument(new XElement("linker"));
+            var linker = document.Root;
+            if (linker == null || linker.Name.LocalName != "linker")
+                throw new InvalidDataException("Assets/link.xml 缺少 linker 根节点");
+
+            var runtimeAssembly = linker.Elements("assembly")
+                .FirstOrDefault(IsHybridClrRuntimeAssembly);
+            if (runtimeAssembly != null && PreservesHybridClrRuntimeApi(runtimeAssembly))
+                return;
+
+            if (runtimeAssembly == null)
+            {
+                runtimeAssembly = new XElement(
+                    "assembly",
+                    new XAttribute("fullname", HybridClrRuntimeAssemblyName));
+                linker.Add(runtimeAssembly);
+            }
+
+            var runtimeApi = runtimeAssembly.Elements("type")
+                .FirstOrDefault(element => string.Equals(
+                    (string)element.Attribute("fullname"),
+                    HybridClrRuntimeApiTypeName,
+                    StringComparison.Ordinal));
+            if (runtimeApi == null)
+            {
+                runtimeAssembly.Add(new XElement(
+                    "type",
+                    new XAttribute("fullname", HybridClrRuntimeApiTypeName),
+                    new XAttribute("preserve", "all")));
+            }
+            else
+            {
+                runtimeApi.SetAttributeValue("preserve", "all");
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(linkXmlPath) ?? projectRoot);
+            using (var writer = new StreamWriter(linkXmlPath, false, new UTF8Encoding(false)))
+                document.Save(writer, SaveOptions.DisableFormatting);
+            AssetDatabase.ImportAsset(
+                LinkXmlAssetPath,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+            Debug.Log("[Hybrid] 已确保 Assets/link.xml 保留 HybridCLR.RuntimeApi。");
+        }
+
+        public static bool ValidateHybridClrRuntimeLinkXml(out string problem)
+        {
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var linkXmlPath = Path.Combine(projectRoot, LinkXmlAssetPath.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(linkXmlPath))
+            {
+                problem = "Assets/link.xml 不存在，无法保留 HybridCLR.RuntimeApi";
+                return false;
+            }
+
+            try
+            {
+                var document = XDocument.Load(linkXmlPath);
+                var preserved = document
+                    .Descendants("assembly")
+                    .Where(IsHybridClrRuntimeAssembly)
+                    .Any(PreservesHybridClrRuntimeApi);
+                if (!preserved)
+                {
+                    problem = "Assets/link.xml 未保留 HybridCLR.RuntimeApi，请重新执行一键部署";
+                    return false;
+                }
+            }
+            catch (Exception e)
+            {
+                problem = "Assets/link.xml 无效: " + e.GetBaseException().Message;
+                return false;
+            }
+
+            problem = null;
+            return true;
+        }
+
+        static bool IsHybridClrRuntimeAssembly(XElement element)
+        {
+            return string.Equals(
+                (string)element.Attribute("fullname"),
+                HybridClrRuntimeAssemblyName,
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        static bool PreservesHybridClrRuntimeApi(XElement assembly)
+        {
+            if (string.Equals((string)assembly.Attribute("preserve"), "all", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return assembly.Elements("type").Any(element =>
+                string.Equals(
+                    (string)element.Attribute("fullname"),
+                    HybridClrRuntimeApiTypeName,
+                    StringComparison.Ordinal)
+                && string.Equals(
+                    (string)element.Attribute("preserve"),
+                    "all",
+                    StringComparison.OrdinalIgnoreCase));
         }
 
         public static void RemoveStaleBusinessAotCache(HybridSettings settings)
@@ -362,6 +472,8 @@ namespace Native.Editor.Hybrid
 
             var settings = HybridSettings.instance;
             HybridAndroidSdk.RemoveBusinessAssemblyFromLinkXml(settings);
+            if (!HybridAndroidSdk.ValidateHybridClrRuntimeLinkXml(out var linkXmlProblem))
+                throw new BuildFailedException("[Hybrid] " + linkXmlProblem);
             HybridAndroidSdk.RemoveStaleBusinessAotCache(settings);
             if (!HybridAndroidSdk.Validate(settings, out var problem))
                 throw new BuildFailedException("[Hybrid] " + problem);

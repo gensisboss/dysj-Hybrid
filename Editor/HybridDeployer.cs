@@ -111,6 +111,7 @@ namespace Native.Editor.Hybrid
 
                 HybridAndroidSdk.ConfigureUnityEditor(settings);
                 HybridAndroidSdk.RemoveBusinessAssemblyFromLinkXml(settings);
+                HybridAndroidSdk.EnsureHybridClrRuntimeLinkXml();
                 if (settings.enforceIl2Cpp)
                 {
                     var group = BuildPipeline.GetBuildTargetGroup(settings.buildTarget);
@@ -432,6 +433,8 @@ namespace Native.Editor.Hybrid
                 problems.Add("HybridCLR Runtime 尚未安装");
             else if (!HybridRuntimeCompatibility.IsPatchCurrent(out var runtimeCompatibilityProblem))
                 problems.Add(runtimeCompatibilityProblem);
+            if (!HybridAndroidSdk.ValidateHybridClrRuntimeLinkXml(out var linkXmlProblem))
+                problems.Add(linkXmlProblem);
             AddAndroidSdkProblem(settings, problems);
             CheckFile(settings.buildPipelineRoot + "/HybridCLRBuildPipeline.cs", problems);
             CheckFile(settings.bootstrapScenePath, problems);
