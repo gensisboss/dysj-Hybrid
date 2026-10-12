@@ -4,51 +4,104 @@
 
 ## 一、当前功能的设计方案
 
-### 1. 工具入口与职责
+### 1. 设计目标
 
-安装 Package 后，通过 Unity 菜单 `Tools > Hybrid` 打开工具窗口。窗口按实际操作顺序提供三个主操作：
+业务工程由其他项目转换而来，转换过程会覆盖 `Assets` 中的接入代码，因此不能依赖人工反复修改，也不能把核心工具本身放在容易被覆盖的业务目录中。本方案把稳定能力封装在 UPM Package `com.dysj.hybrid` 内，再由 Package 按模板重新生成项目侧适配文件。这样即使业务代码被整体替换，也可以根据同一套配置恢复热更新环境。
 
-1. **一键部署热更新功能**：恢复项目被业务转换流程覆盖的 HybridCLR 接入代码和配置。
-2. **检查当前状态**：检查依赖、配置、生成文件和基准 APK 构建条件是否完整。
-3. **生成业务热更新包**：编译业务程序集、构建 YooAsset `Game` 包，并导出可上传到 CDN 的业务代码文件。
+当前方案将 `Assembly-CSharp` 定义为业务热更新程序集。Android APK 只负责运行 IL2CPP/HybridCLR 宿主和启动器，不把 `Assembly-CSharp` 静态编译进 IL2CPP；启动器在运行时取得 DLL 后通过 `Assembly.Load` 加载，最后才进入业务主场景。
 
-按钮会根据项目状态自动启用或禁用。点击不可用的按钮时，工具会显示当前缺失的文件、错误配置、编译状态或尚未生成基准 APK 等原因。
+### 2. 使用的技术
 
-### 2. 一键部署内容
+| 技术 | 在本方案中的作用 |
+| --- | --- |
+| Unity UPM Package | 封装编辑器窗口、部署器、构建桥接、运行时启动器和代码模板，使工具可以独立安装和版本化。 |
+| HybridCLR 8.11.0 | 让 IL2CPP Android 包能够在运行时加载 `Assembly-CSharp.dll`，并通过 `RuntimeApi.LoadMetadataForAOTAssembly` 补充 AOT 泛型元数据。 |
+| Unity IL2CPP | 构建 Android 宿主程序和固定的 AOT 代码基线；业务 DLL 在该宿主上解释执行。 |
+| YooAsset 2.3.x | 使用 `ScriptableBuildPipeline` 构建 `Game` 资源包，沿用项目现有资源收集和版本体系。 |
+| AssetBundle | 将业务主场景单独构建为 `hybrid_main_scene.bundle` 放入 `StreamingAssets`，避免主场景在业务 DLL 加载前被 Unity 直接加载。 |
+| UnityWebRequest | 请求 CDN 清单和业务 DLL，同时负责从 Android `StreamingAssets` 读取内置场景包。 |
+| JSON + SHA-256 | 清单记录版本、平台、文件名、长度和哈希；生成时写入，加载前校验，防止错包或不完整文件被执行。 |
+| `persistentDataPath` 缓存 | 保存最近一次校验成功的远端业务 DLL，在网络或 CDN 异常时提供回退。 |
 
-部署过程会自动完成以下工作：
+### 3. 总体架构
 
-- 配置 HybridCLR，并为 HybridCLR 8.11.0 应用 Unity 2022.1 兼容处理。
-- 生成 `Assets/Editor/HybridCLR/HybridCLRBuildPipeline.cs`。
-- 生成 `Assets/_Native/Editor/BuildYooAssetsAndroid.cs`。
-- 创建并配置 AOT 启动场景 `Assets/_Native/Runtime/Hybrid/HybridBootstrap.unity`。
-- 配置 YooAsset 的业务程序集收集规则。
-- 配置 Android IL2CPP 构建参数、业务主场景、启动类型和校验类型。
-- 接管 Unity 的 Android Build 流程，在 APK 中写入与当前包体匹配的默认业务程序集和 AOT 元数据基线。
+```mermaid
+flowchart LR
+    subgraph Editor[编辑器与构建期]
+        P[UPM Package] --> D[部署器]
+        D --> C[生成项目适配代码与配置]
+        C --> H[HybridCLR 构建管线]
+        C --> Y[YooAsset 构建适配器]
+        H --> A[AOT 元数据基线]
+        H --> B[Assembly-CSharp.dll]
+        H --> S[业务主场景 AssetBundle]
+        Y --> R[Game 资源包与 CDN 发布文件]
+    end
 
-### 3. 运行时加载策略
+    subgraph APK[Android APK 宿主]
+        BOOT[HybridBootstrap 启动场景]
+        META[内置 AOT 补充元数据]
+        BASE[内置默认业务 DLL]
+        SCENE[内置业务场景包]
+    end
 
-APK 始终携带一套可独立启动的默认业务程序集。应用启动时先进入 AOT 启动场景，再按以下顺序选择业务代码：
+    subgraph Runtime[运行时]
+        CDN[CDN 最新业务 DLL]
+        CACHE[本地缓存 DLL]
+        SELECT[版本比较与完整性校验]
+        LOAD[Assembly.Load]
+        MAIN[加载业务主场景]
+    end
 
-1. 校验 APK 内置的默认业务程序集。
-2. 请求 CDN 上的 `business_latest.json`。
-3. 远端版本与 APK 内置版本一致时，直接使用 APK 内置程序集。
-4. 远端版本不一致时，下载对应 DLL，并校验文件长度和 SHA-256。
-5. 下载和校验成功后缓存文件，加载远端业务程序集。
-6. 远端请求或校验失败时，优先尝试本地缓存；缓存不可用时回退到 APK 内置程序集。
-7. 业务程序集接管后，再加载配置的业务主场景。
-
-因此，CDN 暂时不可用不会直接导致应用无法启动，但 APK 内置基线必须保持完整。
-
-### 4. 发布产物
-
-默认生成文件根目录为：
-
-```text
-D:/Project/dysj_client_native/Bundles/Android/Game
+    A --> META
+    B --> BASE
+    S --> SCENE
+    BOOT --> META
+    BASE --> SELECT
+    CDN --> SELECT
+    CACHE --> SELECT
+    SELECT --> LOAD
+    LOAD --> MAIN
+    SCENE --> MAIN
 ```
 
-实际发布目录为 `<生成文件根目录>/<发布版本>/BusinessCode`，其中包含：
+架构分为两条互相约束的链路：
+
+- **宿主构建链路**：接管 Unity Android Build，执行 HybridCLR `GenerateAll`，分析泛型引用，生成裁剪后的 AOT 补充元数据、默认业务 DLL 和业务场景包，并将它们固化进 APK。这个结果构成不可随 DLL 单独变更的 AOT 基线。
+- **业务发布链路**：只重新编译 `Assembly-CSharp` 并生成 AOT 泛型引用分析；工具会检查新 DLL 所需的 AOT 程序集是否都存在于 APK 基线中。检查通过后，才构建 YooAsset `Game` 包并导出 CDN 文件；出现新增 AOT 依赖时会阻止发布并要求重新构建 APK。
+
+### 4. 运行时设计
+
+`HybridBootstrap` 是 APK 的唯一首场景。它先校验并加载 APK 中的 AOT 补充元数据，再从“远端 DLL、本地缓存 DLL、APK 默认 DLL”中选择一份有效业务代码：
+
+- CDN 版本与 APK 内置版本不同时，下载远端 DLL 并校验平台、长度和 SHA-256；成功后写入缓存并加载。
+- CDN 版本与 APK 内置版本相同时，直接使用 APK 默认 DLL。
+- CDN 请求、下载或校验失败时，尝试已校验的本地缓存；缓存也不可用时使用 APK 默认 DLL。
+- DLL 加载后验证配置的启动类型和业务校验类型，确认程序集正确，最后从内置 AssetBundle 打开业务主场景。
+
+这种设计保证了更新失败不影响基础版本启动，同时确保业务场景不会在动态程序集接管前执行。
+
+### 5. 对项目进行的修改
+
+| 修改位置 | 修改内容与目的 |
+| --- | --- |
+| `Packages/manifest.json` | 引用 `com.dysj.hybrid`，并在缺失时安装指定的 HybridCLR 8.11.0 Package。 |
+| `ProjectSettings/HybridSettings.asset` | 持久化 CDN、发布版本、Android SDK、主场景、类型校验、超时和输出目录等配置。 |
+| `ProjectSettings/HybridCLRSettings.asset` | 启用 HybridCLR，将 `Assembly-CSharp` 设置为热更新程序集，配置补充元数据程序集和生成目录。 |
+| `Assets/Editor/HybridCLR/` | 生成项目专用构建管线和 asmdef，负责宿主基线生成、DLL 编译、AOT 依赖检查及发布文件导出。 |
+| `Assets/_Native/Editor/BuildYooAssetsAndroid.cs` | 生成 Android YooAsset 构建适配器；该目录属于转换工具的原生保护区，避免再次转换时被覆盖。 |
+| `Assets/_Native/Runtime/Hybrid/HybridBootstrap.unity` | 生成纯 AOT 启动场景，确保业务代码加载完成后才进入主场景。 |
+| `Assets/Res/HybridCLR/` | 保存构建阶段生成的默认业务 DLL、清单、AOT 元数据及哈希清单。 |
+| `Assets/Resources/HybridCLR/` | 将上一项同步为 APK 内置资源，供启动器通过 `Resources.Load` 读取。 |
+| `Assets/StreamingAssets/HybridCLR/hybrid_main_scene.bundle` | 保存独立构建的业务主场景包，避免该场景引用导致 `Assembly-CSharp` 被静态打进 IL2CPP。 |
+| `Assets/AssetBundleCollectorSetting.asset` | 在 YooAsset `Game` Package 下创建或更新 `hybridclr` 收集组。 |
+| `Assets/link.xml` | 移除对 `Assembly-CSharp` 的 AOT 保留项，防止动态业务程序集被提前编译进宿主。 |
+| Build Settings | 将启动场景放在首位；实际构建 Android 时进一步只把启动场景交给 Unity，业务场景改由内置 AssetBundle 加载。 |
+| Player Settings 与 Android Gradle | 强制 Android 使用 IL2CPP，校验外部 SDK，并修正 `compileSdk`、Build Tools 和 `sdk.dir`。 |
+
+### 6. 发布文件协议
+
+默认发布根目录是 `D:/Project/dysj_client_native/Bundles/Android/Game`，实际输出到 `<根目录>/<发布版本>/BusinessCode`：
 
 ```text
 Assembly-CSharp_<版本>.dll.bytes
@@ -56,7 +109,7 @@ business_latest.json
 business_<版本>.json
 ```
 
-`business_latest.json` 是客户端查询的最新版本入口；带版本号的清单用于保留可追溯的历史发布信息。
+`business_latest.json` 是客户端查询入口，版本清单用于历史追溯。两个清单都记录程序集名称、版本、Android 平台、文件长度、SHA-256 和生成时间。
 
 ## 二、操作流程图
 
