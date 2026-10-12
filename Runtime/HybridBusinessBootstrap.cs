@@ -91,9 +91,7 @@ namespace DYSJ.HotUpdate.Bootstrap
                         "默认业务程序集必须以内置 .dll.bytes 资源提供: " + preloaded.FullName);
                 }
 
-                var assembly = Assembly.Load(assemblyBytes);
-                ValidateRequiredType(assembly, config.startupTypeName, "启动");
-
+                Assembly.Load(assemblyBytes);
                 Debug.Log("[Hybrid] 业务程序集已加载并接管: " + BusinessAssemblyName);
             }
             catch (Exception e)
@@ -286,14 +284,6 @@ namespace DYSJ.HotUpdate.Bootstrap
                 throw new InvalidOperationException("LoadMetadataForAOTAssembly(" + assemblyName + ") => " + codeName);
         }
 
-        static void ValidateRequiredType(Assembly assembly, string typeName, string label)
-        {
-            if (string.IsNullOrWhiteSpace(typeName))
-                return;
-            if (assembly.GetType(typeName.Trim(), false) == null)
-                throw new InvalidOperationException("远端业务程序集缺少" + label + "类型: " + typeName.Trim());
-        }
-
         static BootstrapConfig LoadConfig()
         {
             var asset = Resources.Load<TextAsset>(ConfigResourcePath);
@@ -303,8 +293,6 @@ namespace DYSJ.HotUpdate.Bootstrap
                 ?? throw new InvalidDataException("business_bootstrap_config.json 格式无效");
             if (string.IsNullOrWhiteSpace(config.mainSceneName))
                 config.mainSceneName = "Main";
-            if (string.IsNullOrWhiteSpace(config.startupTypeName))
-                config.startupTypeName = "Main";
             if (config.timeoutSeconds <= 0)
                 config.timeoutSeconds = 12;
             return config;
@@ -481,7 +469,6 @@ namespace DYSJ.HotUpdate.Bootstrap
             public string remoteRoot;
             public string latestManifest;
             public string mainSceneName;
-            public string startupTypeName;
             public string cacheFolder;
             public int timeoutSeconds;
         }

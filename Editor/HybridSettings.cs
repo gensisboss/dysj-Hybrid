@@ -14,7 +14,6 @@ namespace Native.Editor.Hybrid
         public string businessPublishVersion = "";
         public string businessOutputPath = GetDefaultBusinessOutputRoot();
         public string mainScenePath = "Assets/Scenes/Main.unity";
-        public string businessStartupType = "Main";
 
         public string hybridClrPackageName => "com.code-philosophy.hybridclr";
         public string hybridClrPackageSpec => "https://gitee.com/focus-creative-games/hybridclr_unity.git#v8.11.0";
