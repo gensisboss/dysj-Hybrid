@@ -22,9 +22,11 @@ namespace Native.Editor.Hybrid
         bool _canDeploy;
         bool _canValidate;
         bool _canPublish;
+        bool _canPublishBoot;
         string _deployBlockReason;
         string _validateBlockReason;
         string _publishBlockReason;
+        string _publishBootBlockReason;
 
         internal static void OpenWindow()
         {
@@ -115,6 +117,18 @@ namespace Native.Editor.Hybrid
                     ? "业务热更包生成失败，请查看 Console。"
                     : "业务热更包生成完成：" + outputPath;
             }
+            EditorGUILayout.Space(6);
+            if (DrawActionButton("生成启动界面资源包", 38, _canPublishBoot, _publishBootBlockReason))
+            {
+                if (string.IsNullOrWhiteSpace(settings.businessPublishVersion))
+                    settings.businessPublishVersion = System.DateTime.Now.ToString("yyyyMMddHHmmss");
+                settings.Persist();
+                _publishFailed = !HybridBuildBridge.BuildBootPackageHotUpdate(settings.businessPublishVersion);
+                var outputPath = settings.GetBootPackageOutputPath(settings.businessPublishVersion);
+                _publishStatus = _publishFailed
+                    ? "启动界面资源包生成失败，请查看 Console。"
+                    : "启动界面资源包生成完成：" + outputPath;
+            }
             if (!string.IsNullOrEmpty(_publishStatus))
                 EditorGUILayout.HelpBox(_publishStatus, _publishFailed ? MessageType.Error : MessageType.Info);
 
@@ -141,6 +155,7 @@ namespace Native.Editor.Hybrid
             _canDeploy = HybridDeployer.CanStartDeployment(out _deployBlockReason);
             _canValidate = HybridDeployer.CanValidateProject(out _validateBlockReason);
             _canPublish = HybridDeployer.CanGenerateBusinessHotUpdate(out _publishBlockReason);
+            _canPublishBoot = HybridDeployer.CanGenerateBootPackageHotUpdate(out _publishBootBlockReason);
         }
 
         static bool DrawActionButton(string label, float height, bool enabled, string blockReason)

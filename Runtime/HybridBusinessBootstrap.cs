@@ -11,6 +11,7 @@ using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using YooAsset;
 
 namespace DYSJ.HotUpdate.Bootstrap
 {
@@ -28,6 +29,9 @@ namespace DYSJ.HotUpdate.Bootstrap
         const string PatchAotResourcePathFormat = "HybridCLR/AOT/{0}";
         const string BusinessSceneBundleRelativePath = "HybridCLR/hybrid_main_scene.bundle";
         const string CachedManifestFile = "business_cached_manifest.json";
+        const string DefaultBootPackageName = "BootPackage";
+        const string DefaultBootSceneLocation = "HybridBootstrap";
+        const string BootPackageVersionKey = "DYSJ.Hybrid.BootPackage.Version";
 
         [Header("Loading UI")]
         [SerializeField] Slider slider;
@@ -35,19 +39,45 @@ namespace DYSJ.HotUpdate.Bootstrap
         [SerializeField] TMP_Text labProgress;
 
         float _progress;
+        ResourcePackage _bootPackage;
+        SceneHandle _bootSceneHandle;
+        bool _bootPackageUsesHostMode;
 
         IEnumerator Start()
         {
             DontDestroyOnLoad(gameObject);
-            SetLoading("正在准备游戏代码...", 0.05f);
 
-#if UNITY_EDITOR
-            yield return LoadMainScene("Main");
-#else
             BootstrapConfig config;
             try
             {
                 config = LoadConfig();
+            }
+            catch (Exception e)
+            {
+                Fail("APK 内置启动配置无效", e);
+                yield break;
+            }
+
+#if UNITY_EDITOR
+            yield return LoadBootSceneInEditor(config);
+#else
+            yield return InitializeAndLoadBootPackage(config);
+            if (_bootSceneHandle == null || _bootSceneHandle.Status != EOperationStatus.Succeed)
+                yield break;
+#endif
+
+            BindLoadingView();
+            SetLoading("正在准备游戏代码...", 0.05f);
+
+#if UNITY_EDITOR
+            yield return LoadMainScene(config.mainSceneName);
+#else
+            Coroutine bootPackageUpdate = null;
+            if (_bootPackageUsesHostMode)
+                bootPackageUpdate = StartCoroutine(UpdateBootPackageInBackground(config));
+
+            try
+            {
                 LoadAotMetadata();
                 SetLoading("正在校验内置资源...", 0.2f);
             }
@@ -109,8 +139,195 @@ namespace DYSJ.HotUpdate.Bootstrap
                 yield break;
             }
 
+            // Main resets the global YooAsset runtime during its own initialization. Finish the
+            // parallel boot-package cache operation before switching scenes so it cannot be cut off.
+            if (bootPackageUpdate != null)
+            {
+                SetLoading("正在完成启动资源同步...", 0.94f);
+                yield return bootPackageUpdate;
+            }
+
             yield return LoadMainScene(config.mainSceneName);
 #endif
+        }
+
+        IEnumerator LoadBootSceneInEditor(BootstrapConfig config)
+        {
+            var sceneName = string.IsNullOrWhiteSpace(config.bootSceneLocation)
+                ? DefaultBootSceneLocation
+                : config.bootSceneLocation.Trim();
+            var operation = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Single);
+            if (operation == null)
+            {
+                Fail("无法加载启动界面场景: " + sceneName, null);
+                yield break;
+            }
+            yield return operation;
+        }
+
+#if !UNITY_EDITOR
+        IEnumerator InitializeAndLoadBootPackage(BootstrapConfig config)
+        {
+            if (!YooAssets.Initialized)
+                YooAssets.Initialize();
+
+            var packageName = string.IsNullOrWhiteSpace(config.bootPackageName)
+                ? DefaultBootPackageName
+                : config.bootPackageName.Trim();
+            var preferredVersion = PlayerPrefs.GetString(BootPackageVersionKey, string.Empty);
+            if (string.IsNullOrWhiteSpace(preferredVersion))
+                preferredVersion = config.embeddedBootPackageVersion;
+
+            if (!string.IsNullOrWhiteSpace(config.bootPackageRemoteRoot)
+                && !string.IsNullOrWhiteSpace(preferredVersion))
+            {
+                var hostPackage = YooAssets.CreatePackage(packageName);
+                var hostParameters = new HostPlayModeParameters
+                {
+                    BuildinFileSystemParameters = FileSystemParameters.CreateDefaultBuildinFileSystemParameters(),
+                    CacheFileSystemParameters = FileSystemParameters.CreateDefaultCacheFileSystemParameters(
+                        new BootRemoteServices(config.bootPackageRemoteRoot)),
+                };
+                var initialize = hostPackage.InitializeAsync(hostParameters);
+                yield return initialize;
+                if (initialize.Status == EOperationStatus.Succeed)
+                {
+                    var manifest = hostPackage.UpdatePackageManifestAsync(
+                        preferredVersion.Trim(),
+                        Mathf.Clamp(config.timeoutSeconds, 3, 60));
+                    yield return manifest;
+                    if (manifest.Status == EOperationStatus.Succeed)
+                    {
+                        var missing = hostPackage.CreateResourceDownloader(1, 1);
+                        if (missing.TotalDownloadCount == 0)
+                        {
+                            _bootPackage = hostPackage;
+                            _bootPackageUsesHostMode = true;
+                            yield return LoadBootSceneFromPackage(config);
+                            if (_bootSceneHandle != null && _bootSceneHandle.Status == EOperationStatus.Succeed)
+                                yield break;
+                        }
+                    }
+                }
+
+                Debug.LogWarning("[Hybrid] 缓存启动界面不可用，回退 APK 内置 BootPackage。");
+                yield return DestroyBootPackage(hostPackage);
+            }
+
+            var offlinePackage = YooAssets.CreatePackage(packageName);
+            var offlineParameters = new OfflinePlayModeParameters
+            {
+                BuildinFileSystemParameters = FileSystemParameters.CreateDefaultBuildinFileSystemParameters(),
+            };
+            var offlineInitialize = offlinePackage.InitializeAsync(offlineParameters);
+            yield return offlineInitialize;
+            if (offlineInitialize.Status != EOperationStatus.Succeed)
+            {
+                Fail("APK 内置 BootPackage 初始化失败", new InvalidOperationException(offlineInitialize.Error));
+                yield break;
+            }
+
+            var version = offlinePackage.RequestPackageVersionAsync(false, Mathf.Clamp(config.timeoutSeconds, 3, 60));
+            yield return version;
+            if (version.Status != EOperationStatus.Succeed)
+            {
+                Fail("APK 内置 BootPackage 缺少版本信息", new InvalidOperationException(version.Error));
+                yield break;
+            }
+
+            var offlineManifest = offlinePackage.UpdatePackageManifestAsync(
+                version.PackageVersion,
+                Mathf.Clamp(config.timeoutSeconds, 3, 60));
+            yield return offlineManifest;
+            if (offlineManifest.Status != EOperationStatus.Succeed)
+            {
+                Fail("APK 内置 BootPackage 清单无效", new InvalidOperationException(offlineManifest.Error));
+                yield break;
+            }
+
+            _bootPackage = offlinePackage;
+            _bootPackageUsesHostMode = false;
+            yield return LoadBootSceneFromPackage(config);
+        }
+
+        IEnumerator LoadBootSceneFromPackage(BootstrapConfig config)
+        {
+            var location = string.IsNullOrWhiteSpace(config.bootSceneLocation)
+                ? DefaultBootSceneLocation
+                : config.bootSceneLocation.Trim();
+            _bootSceneHandle = _bootPackage.LoadSceneAsync(location, LoadSceneMode.Single);
+            yield return _bootSceneHandle;
+            if (_bootSceneHandle.Status != EOperationStatus.Succeed)
+                Fail("BootPackage 无法加载启动界面: " + location, new InvalidOperationException(_bootSceneHandle.LastError));
+        }
+
+        IEnumerator UpdateBootPackageInBackground(BootstrapConfig config)
+        {
+            var package = _bootPackage;
+            if (package == null || string.IsNullOrWhiteSpace(config.bootPackageRemoteRoot))
+                yield break;
+
+            var requestVersion = package.RequestPackageVersionAsync(true, Mathf.Clamp(config.timeoutSeconds, 3, 60));
+            yield return requestVersion;
+            if (requestVersion.Status != EOperationStatus.Succeed)
+            {
+                Debug.LogWarning("[Hybrid] 后台检查启动界面更新失败: " + requestVersion.Error);
+                yield break;
+            }
+
+            var cachedVersion = PlayerPrefs.GetString(BootPackageVersionKey, string.Empty);
+            if (string.Equals(requestVersion.PackageVersion, cachedVersion, StringComparison.Ordinal))
+                yield break;
+
+            var updateManifest = package.UpdatePackageManifestAsync(
+                requestVersion.PackageVersion,
+                Mathf.Clamp(config.timeoutSeconds, 3, 60));
+            yield return updateManifest;
+            if (updateManifest.Status != EOperationStatus.Succeed)
+            {
+                Debug.LogWarning("[Hybrid] 后台更新启动界面清单失败: " + updateManifest.Error);
+                yield break;
+            }
+
+            var downloader = package.CreateResourceDownloader(2, 2);
+            downloader.BeginDownload();
+            yield return downloader;
+            if (downloader.Status != EOperationStatus.Succeed)
+            {
+                Debug.LogWarning("[Hybrid] 后台下载启动界面更新失败: " + downloader.Error);
+                yield break;
+            }
+
+            PlayerPrefs.SetString(BootPackageVersionKey, requestVersion.PackageVersion);
+            PlayerPrefs.Save();
+            Debug.Log("[Hybrid] 启动界面更新已缓存，将在下次启动生效: " + requestVersion.PackageVersion);
+        }
+
+        static IEnumerator DestroyBootPackage(ResourcePackage package)
+        {
+            if (package == null)
+                yield break;
+            var destroy = package.DestroyAsync();
+            yield return destroy;
+            if (YooAssets.Initialized)
+                YooAssets.RemovePackage(package);
+        }
+#endif
+
+        void BindLoadingView()
+        {
+            slider = FindLoadedComponent<Slider>("Slider");
+            labPrompt = FindLoadedComponent<TMP_Text>("lab_prompt");
+            labProgress = FindLoadedComponent<TMP_Text>("lab_progress");
+        }
+
+        static T FindLoadedComponent<T>(string objectName) where T : Component
+        {
+            return Resources.FindObjectsOfTypeAll<T>()
+                .FirstOrDefault(item => item != null
+                    && item.gameObject.scene.IsValid()
+                    && item.gameObject.scene.isLoaded
+                    && string.Equals(item.gameObject.name, objectName, StringComparison.Ordinal));
         }
 
         IEnumerator TryLoadRemote(
@@ -309,11 +526,23 @@ namespace DYSJ.HotUpdate.Bootstrap
         {
             var asset = Resources.Load<TextAsset>(ConfigResourcePath);
             if (asset == null)
-                return new BootstrapConfig { mainSceneName = "Main", timeoutSeconds = 12 };
+            {
+                return new BootstrapConfig
+                {
+                    mainSceneName = "Main",
+                    timeoutSeconds = 12,
+                    bootPackageName = DefaultBootPackageName,
+                    bootSceneLocation = DefaultBootSceneLocation,
+                };
+            }
             var config = JsonUtility.FromJson<BootstrapConfig>(asset.text)
                 ?? throw new InvalidDataException("business_bootstrap_config.json 格式无效");
             if (string.IsNullOrWhiteSpace(config.mainSceneName))
                 config.mainSceneName = "Main";
+            if (string.IsNullOrWhiteSpace(config.bootPackageName))
+                config.bootPackageName = DefaultBootPackageName;
+            if (string.IsNullOrWhiteSpace(config.bootSceneLocation))
+                config.bootSceneLocation = DefaultBootSceneLocation;
             if (config.timeoutSeconds <= 0)
                 config.timeoutSeconds = 12;
             return config;
@@ -489,6 +718,30 @@ namespace DYSJ.HotUpdate.Bootstrap
             public string mainSceneName;
             public string cacheFolder;
             public int timeoutSeconds;
+            public string bootPackageName;
+            public string bootPackageRemoteRoot;
+            public string bootSceneLocation;
+            public string embeddedBootPackageVersion;
+        }
+
+        sealed class BootRemoteServices : IRemoteServices
+        {
+            readonly string _root;
+
+            public BootRemoteServices(string root)
+            {
+                _root = (root ?? string.Empty).Trim().TrimEnd('/');
+            }
+
+            public string GetRemoteMainURL(string fileName)
+            {
+                return _root + "/" + fileName;
+            }
+
+            public string GetRemoteFallbackURL(string fileName)
+            {
+                return GetRemoteMainURL(fileName);
+            }
         }
 
         [Serializable]

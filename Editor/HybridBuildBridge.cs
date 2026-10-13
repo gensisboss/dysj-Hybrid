@@ -18,9 +18,14 @@ namespace Native.Editor.Hybrid
                 return;
             HybridRuntimeCompatibility.EnsureInstalledRuntime();
             HybridAndroidSdk.EnsureHybridClrRuntimeLinkXml();
+            HybridDeployer.ValidateBootSceneForBuild();
             Invoke("GenerateAllAndPrepareHostBuild");
             HybridAndroidSdk.StampEmbeddedBusinessVersion(HybridSettings.instance);
             HybridAndroidSdk.SyncBootstrapResources(HybridSettings.instance, true);
+            var bootVersion = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+            HybridDeployer.StampEmbeddedBootPackageVersion(bootVersion);
+            if (!(InvokeBusinessBuilder("BuildBootPackageForHost", bootVersion) is true))
+                throw new BuildFailedException("BootPackage 内置基线构建失败");
         }
 
         public static void PrepareAssetBuild(BuildTarget target)
@@ -64,6 +69,35 @@ namespace Native.Editor.Hybrid
             }
         }
 
+        public static bool HasBootPackageBuilder()
+        {
+            var type = FindType(BusinessBuilderTypeName);
+            return type?.GetMethod(
+                "BuildBootPackageHotUpdate",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static) != null;
+        }
+
+        public static bool BuildBootPackageHotUpdate(string version)
+        {
+            return InvokeBusinessBuilder("BuildBootPackageHotUpdate", version) is true;
+        }
+
+        static object InvokeBusinessBuilder(string methodName, params object[] arguments)
+        {
+            var type = FindType(BusinessBuilderTypeName)
+                ?? throw new BuildFailedException("YooAsset 构建适配器尚未部署，请先执行一键部署热更新功能。");
+            var method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                ?? throw new BuildFailedException("构建入口不存在: " + BusinessBuilderTypeName + "." + methodName);
+            try
+            {
+                return method.Invoke(null, arguments);
+            }
+            catch (TargetInvocationException e)
+            {
+                throw e.InnerException ?? e;
+            }
+        }
+
         static void Invoke(string methodName, params object[] arguments)
         {
             var type = FindType(PipelineTypeName);
@@ -99,7 +133,7 @@ namespace Native.Editor.Hybrid
     [InitializeOnLoad]
     internal static class HybridBuildPlayerHandler
     {
-        const string BootstrapScenePath = "Assets/_Native/Runtime/Hybrid/HybridBootstrap.unity";
+        const string LauncherScenePath = "Assets/_Native/Runtime/Hybrid/HybridLauncher.unity";
 
         static HybridBuildPlayerHandler()
         {
@@ -112,9 +146,9 @@ namespace Native.Editor.Hybrid
             {
                 Debug.Log("[Hybrid] Unity Build 已接管：正在准备默认业务程序集与 HybridCLR 主包资源。");
                 HybridBuildBridge.PrepareHostBuild(options.target);
-                options.scenes = new[] { BootstrapScenePath };
+                options.scenes = new[] { LauncherScenePath };
                 options.options |= BuildOptions.CleanBuildCache;
-                Debug.Log("[Hybrid] APK 仅包含启动场景；Main 将在业务 DLL 加载后从内置场景资源包打开。");
+                Debug.Log("[Hybrid] APK 仅包含 HybridLauncher；HybridBootstrap 从内置/缓存 BootPackage 加载，Main 在业务 DLL 加载后打开。");
             }
 
             BuildPlayerWindow.DefaultBuildMethods.BuildPlayer(options);

@@ -3,7 +3,8 @@
     "rootNamespace": "DYSJ.HotUpdate.Bootstrap",
     "references": [
         "Unity.TextMeshPro",
-        "UnityEngine.UI"
+        "UnityEngine.UI",
+        "YooAsset"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

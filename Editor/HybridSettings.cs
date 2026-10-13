@@ -12,6 +12,7 @@ namespace Native.Editor.Hybrid
         public string businessPublishVersion = "";
         public string businessOutputPath = GetDefaultBusinessOutputRoot();
         public string mainScenePath = "Assets/Scenes/Main.unity";
+        public string bootPackageRemoteRoot = "";
 
         public string hybridClrPackageName => "com.code-philosophy.hybridclr";
         public string hybridClrPackageSpec => "https://gitee.com/focus-creative-games/hybridclr_unity.git#v8.11.0";
@@ -22,7 +23,9 @@ namespace Native.Editor.Hybrid
         public int androidCompileSdkVersion => 31;
         public string androidBuildToolsVersion => "30.0.2";
         public string businessAssemblyName => "Assembly-CSharp";
+        public string launcherScenePath => "Assets/_Native/Runtime/Hybrid/HybridLauncher.unity";
         public string bootstrapScenePath => "Assets/_Native/Runtime/Hybrid/HybridBootstrap.unity";
+        public string bootPackageName => "BootPackage";
         public string buildAdapterPath => "Assets/_Native/Editor/BuildYooAssetsAndroid.cs";
         public string buildPipelineRoot => "Assets/Editor/HybridCLR";
         public string resourceRoot => "Assets/Res/HybridCLR";
@@ -48,6 +51,17 @@ namespace Native.Editor.Hybrid
         public string GetBusinessOutputPath(string version)
         {
             return Path.Combine(GetBusinessOutputRoot(), (version ?? string.Empty).Trim(), "BusinessCode");
+        }
+
+        public string GetBootPackageOutputPath(string version)
+        {
+            var projectRoot = Path.GetDirectoryName(UnityEngine.Application.dataPath);
+            return Path.GetFullPath(Path.Combine(
+                projectRoot,
+                "Bundles",
+                buildTarget.ToString(),
+                bootPackageName,
+                (version ?? string.Empty).Trim()));
         }
 
         static string GetDefaultBusinessOutputRoot()

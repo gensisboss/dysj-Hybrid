@@ -24,6 +24,8 @@ namespace Native.Editor
     /// </summary>
     internal static class BuildYooAssetsAndroid
     {
+        const string BootPackageName = "BootPackage";
+
         public static void Build()
         {
             try
@@ -103,13 +105,44 @@ namespace Native.Editor
             }
         }
 
+        internal static bool BuildBootPackageForHost(string version)
+        {
+            return BuildBootPackage(version, true);
+        }
+
+        internal static bool BuildBootPackageHotUpdate(string version)
+        {
+            return BuildBootPackage(version, false);
+        }
+
+        static bool BuildBootPackage(string version, bool copyToStreamingAssets)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(version))
+                    throw new ArgumentException("BootPackage 版本号不能为空", nameof(version));
+                const BuildTarget target = BuildTarget.Android;
+                var group = BuildPipeline.GetBuildTargetGroup(target);
+                if (EditorUserBuildSettings.activeBuildTarget != target
+                    && !EditorUserBuildSettings.SwitchActiveBuildTarget(group, target))
+                    throw new InvalidOperationException("无法切换 Android Build Target");
+                return BuildPackage(target, BootPackageName, version.Trim(), null, copyToStreamingAssets);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError("[BuildYooAssetsAndroid] BootPackage 构建失败: " + exception);
+                return false;
+            }
+        }
+
         // ---------------------------------------------------------- 构建
 
         static bool BuildPackage(
             BuildTarget target,
             string packageName,
             string version,
-            string businessOutputDirectory = null)
+            string businessOutputDirectory = null,
+            bool copyToStreamingAssets = false)
         {
             Debug.Log($"[BuildYooAssetsAndroid] 开始构建资源包: {packageName} ({target})");
 
@@ -126,7 +159,9 @@ namespace Native.Editor
                 VerifyBuildingResult = true,
                 EnableSharePackRule = true, // 共享资源构建模式，兼容 1.5x
                 FileNameStyle = EFileNameStyle.HashName,
-                BuildinFileCopyOption = EBuildinFileCopyOption.None,
+                BuildinFileCopyOption = copyToStreamingAssets
+                    ? EBuildinFileCopyOption.ClearAndCopyAll
+                    : EBuildinFileCopyOption.None,
                 BuildinFileCopyParams = string.Empty,
                 CompressOption = ECompressOption.LZ4,
                 ClearBuildCacheFiles = false, // 保留缓存，启用增量构建
@@ -173,6 +208,8 @@ namespace Native.Editor
         {
             var known = PackageConfig.Templates.Values
                 .Select(p => p.PackageName)
+                .Concat(new[] { BootPackageName })
+                .Distinct(StringComparer.Ordinal)
                 .ToArray();
 
             var value = GetArg("-packages");

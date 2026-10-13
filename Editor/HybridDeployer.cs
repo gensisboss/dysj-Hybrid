@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using UnityEditor;
+using UnityEditor.Build;
 using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
 using UnityEngine;
@@ -157,6 +158,7 @@ namespace Native.Editor.Hybrid
             WriteTemplate("HybridCLREditorTools.asmdef.txt", CombineAssetPath(settings.buildPipelineRoot, "HybridCLREditorTools.asmdef"), replacements);
             WriteTemplate("HybridCLRBuildPipeline.cs.txt", CombineAssetPath(settings.buildPipelineRoot, "HybridCLRBuildPipeline.cs"), replacements);
             WriteTemplate("BuildYooAssetsAndroid.cs.txt", settings.buildAdapterPath, replacements);
+            WriteTemplate("HybridLauncher.unity.txt", settings.launcherScenePath, replacements);
             WriteTemplate("HybridBootstrap.unity.txt", settings.bootstrapScenePath, replacements);
 
             EnsureAssetDirectory(settings.resourceRoot);
@@ -228,6 +230,8 @@ namespace Native.Editor.Hybrid
                 throw new InvalidOperationException("Runtime Prefix 无效: " + settings.runtimeResourcePrefix);
             var assetPath = $"Assets/Resources/{prefix}/business_bootstrap_config.json";
             EnsureAssetDirectory(Path.GetDirectoryName(assetPath)?.Replace('\\', '/') ?? "Assets/Resources");
+            settings.bootPackageRemoteRoot = ResolveBootPackageRemoteRoot(settings);
+            settings.Persist();
             var config = new BusinessBootstrapConfig
             {
                 remoteRoot = (settings.businessRemoteRoot ?? string.Empty).Trim().TrimEnd('/'),
@@ -235,26 +239,70 @@ namespace Native.Editor.Hybrid
                 mainSceneName = Path.GetFileNameWithoutExtension(settings.mainScenePath),
                 cacheFolder = "HybridCLRBusiness",
                 timeoutSeconds = Math.Max(3, Math.Min(60, settings.businessRemoteTimeoutSeconds)),
+                bootPackageName = settings.bootPackageName,
+                bootPackageRemoteRoot = (settings.bootPackageRemoteRoot ?? string.Empty).Trim().TrimEnd('/'),
+                bootSceneLocation = Path.GetFileNameWithoutExtension(settings.bootstrapScenePath),
+                embeddedBootPackageVersion = string.Empty,
             };
             WriteIfChanged(ToFullPath(assetPath), JsonUtility.ToJson(config, true) + Environment.NewLine);
         }
 
+        static string ResolveBootPackageRemoteRoot(HybridSettings settings)
+        {
+            var configured = (settings.bootPackageRemoteRoot ?? string.Empty).Trim().TrimEnd('/');
+            if (!string.IsNullOrEmpty(configured))
+                return configured;
+
+            var gameConfig = FindType("GameConfig");
+            var bundleCdn = gameConfig?
+                .GetField("BundleCDN", BindingFlags.Public | BindingFlags.Static)?
+                .GetValue(null)?
+                .ToString()?
+                .Trim()
+                .TrimEnd('/');
+            if (string.IsNullOrEmpty(bundleCdn))
+                throw new InvalidOperationException("无法从 GameConfig.BundleCDN 推导 BootPackage CDN 地址");
+            return bundleCdn + "/YooPackage/" + settings.bootPackageName;
+        }
+
+        internal static void StampEmbeddedBootPackageVersion(string version)
+        {
+            if (!IsSafeVersion(version))
+                throw new InvalidOperationException("BootPackage 内置版本号非法: " + version);
+            var settings = HybridSettings.instance;
+            var prefix = (settings.runtimeResourcePrefix ?? string.Empty).Trim().Trim('/', '\\');
+            var assetPath = $"Assets/Resources/{prefix}/business_bootstrap_config.json";
+            var fullPath = ToFullPath(assetPath);
+            if (!File.Exists(fullPath))
+                throw new FileNotFoundException("缺少启动配置，请先执行一键部署", assetPath);
+            var config = JsonUtility.FromJson<BusinessBootstrapConfig>(File.ReadAllText(fullPath, Encoding.UTF8))
+                ?? throw new InvalidDataException("启动配置格式无效: " + assetPath);
+            config.embeddedBootPackageVersion = version;
+            WriteIfChanged(fullPath, JsonUtility.ToJson(config, true) + Environment.NewLine);
+            AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
+        }
+
         static void EnsureBootstrapScenes(HybridSettings settings)
         {
+            var launcher = NormalizeAssetPath(settings.launcherScenePath);
             var bootstrap = NormalizeAssetPath(settings.bootstrapScenePath);
             var main = NormalizeAssetPath(settings.mainScenePath);
+            if (!File.Exists(ToFullPath(launcher)))
+                throw new FileNotFoundException("内置启动入口场景不存在", launcher);
             if (!File.Exists(ToFullPath(bootstrap)))
-                throw new FileNotFoundException("业务热更新启动场景不存在", bootstrap);
+                throw new FileNotFoundException("热更新启动界面场景不存在", bootstrap);
             if (!File.Exists(ToFullPath(main)))
                 throw new FileNotFoundException("游戏主场景不存在", main);
 
             var scenes = new List<EditorBuildSettingsScene>
             {
+                new EditorBuildSettingsScene(launcher, true),
                 new EditorBuildSettingsScene(bootstrap, true),
                 new EditorBuildSettingsScene(main, true),
             };
             scenes.AddRange(EditorBuildSettings.scenes.Where(scene =>
-                !string.Equals(NormalizeAssetPath(scene.path), bootstrap, StringComparison.OrdinalIgnoreCase)
+                !string.Equals(NormalizeAssetPath(scene.path), launcher, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(NormalizeAssetPath(scene.path), bootstrap, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(NormalizeAssetPath(scene.path), main, StringComparison.OrdinalIgnoreCase)));
             EditorBuildSettings.scenes = scenes.ToArray();
         }
@@ -329,8 +377,61 @@ namespace Native.Editor.Hybrid
             SetRelativeString(itemCollector, "AssetTags", "hybridclr");
             SetRelativeString(itemCollector, "UserData", string.Empty);
 
+            EnsureBootPackageCollector(packages, settings);
+
             serialized.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(collector);
+        }
+
+        static void EnsureBootPackageCollector(SerializedProperty packages, HybridSettings settings)
+        {
+            SerializedProperty bootPackage = null;
+            for (var i = 0; i < packages.arraySize; i++)
+            {
+                var item = packages.GetArrayElementAtIndex(i);
+                if (item.FindPropertyRelative("PackageName")?.stringValue == settings.bootPackageName)
+                {
+                    bootPackage = item;
+                    break;
+                }
+            }
+            if (bootPackage == null)
+            {
+                packages.InsertArrayElementAtIndex(packages.arraySize);
+                bootPackage = packages.GetArrayElementAtIndex(packages.arraySize - 1);
+            }
+
+            SetRelativeString(bootPackage, "PackageName", settings.bootPackageName);
+            SetRelativeString(bootPackage, "PackageDesc", "Hot-update bootstrap scene");
+            SetRelativeBool(bootPackage, "EnableAddressable", false);
+            SetRelativeBool(bootPackage, "SupportExtensionless", true);
+            SetRelativeBool(bootPackage, "LocationToLower", true);
+            SetRelativeBool(bootPackage, "IncludeAssetGUID", false);
+            SetRelativeBool(bootPackage, "AutoCollectShaders", true);
+            SetRelativeString(bootPackage, "IgnoreRuleName", "NormalIgnoreRule");
+
+            var groups = bootPackage.FindPropertyRelative("Groups")
+                ?? throw new InvalidOperationException("BootPackage 缺少 Groups 字段");
+            groups.arraySize = 1;
+            var group = groups.GetArrayElementAtIndex(0);
+            SetRelativeString(group, "GroupName", "bootstrap");
+            SetRelativeString(group, "GroupDesc", "Hybrid bootstrap scene and visual dependencies");
+            SetRelativeString(group, "AssetTags", "bootstrap");
+            SetRelativeString(group, "ActiveRuleName", "EnableGroup");
+
+            var collectors = group.FindPropertyRelative("Collectors")
+                ?? throw new InvalidOperationException("BootPackage bootstrap Group 缺少 Collectors 字段");
+            collectors.arraySize = 1;
+            var sceneCollector = collectors.GetArrayElementAtIndex(0);
+            var scenePath = NormalizeAssetPath(settings.bootstrapScenePath);
+            SetRelativeString(sceneCollector, "CollectPath", scenePath);
+            SetRelativeString(sceneCollector, "CollectorGUID", AssetDatabase.AssetPathToGUID(scenePath));
+            SetRelativeInt(sceneCollector, "CollectorType", 0);
+            SetRelativeString(sceneCollector, "AddressRuleName", "AddressByFileName");
+            SetRelativeString(sceneCollector, "PackRuleName", "PackSeparately");
+            SetRelativeString(sceneCollector, "FilterRuleName", "CollectScene");
+            SetRelativeString(sceneCollector, "AssetTags", "bootstrap");
+            SetRelativeString(sceneCollector, "UserData", string.Empty);
         }
 
         public static bool ValidateProject(bool showDialog)
@@ -370,6 +471,7 @@ namespace Native.Editor.Hybrid
                              "HybridCLRBuildPipeline.cs.txt",
                              "HybridCLRGetIl2CppFolderHook.cs.txt",
                              "BuildYooAssetsAndroid.cs.txt",
+                             "HybridLauncher.unity.txt",
                              "HybridBootstrap.unity.txt",
                          })
                     CheckPackageFile(CombineAssetPath(TemplateRelativeRoot, template), problems);
@@ -411,6 +513,29 @@ namespace Native.Editor.Hybrid
             return problems.Count == 0;
         }
 
+        public static bool CanGenerateBootPackageHotUpdate(out string problem)
+        {
+            var settings = HybridSettings.instance;
+            var problems = CollectDeploymentProblemsSafely(settings);
+            try
+            {
+                AddEditorBusyProblems(problems);
+                CheckFile(settings.buildAdapterPath, problems);
+                CheckFile(settings.bootstrapScenePath, problems);
+                if (!IsSafeVersion(settings.businessPublishVersion))
+                    problems.Add("CDN 发布版本不能为空，且只能包含字母、数字、点、下划线或短横线（最长 64 位）");
+                if (!HybridBuildBridge.HasBootPackageBuilder())
+                    problems.Add("BootPackage 构建入口尚未加载，请等待 Unity 编译完成");
+            }
+            catch (Exception e)
+            {
+                problems.Add("检查启动界面资源包生成条件失败: " + e.GetBaseException().Message);
+            }
+
+            problem = string.Join("\n", problems.Distinct().Select(item => "- " + item));
+            return problems.Count == 0;
+        }
+
         public static bool CanValidateProject(out string problem)
         {
             var problems = new List<string>();
@@ -434,15 +559,42 @@ namespace Native.Editor.Hybrid
                 problems.Add(linkXmlProblem);
             AddAndroidSdkProblem(settings, problems);
             CheckFile(settings.buildPipelineRoot + "/HybridCLRBuildPipeline.cs", problems);
+            CheckFile(settings.launcherScenePath, problems);
             CheckFile(settings.bootstrapScenePath, problems);
             CheckPackageFile("Runtime/HybridBusinessBootstrap.cs", problems);
             CheckFile($"Assets/Resources/{(settings.runtimeResourcePrefix ?? string.Empty).Trim('/')}/business_bootstrap_config.json", problems);
             var enabledScenes = EditorBuildSettings.scenes.Where(scene => scene.enabled).ToArray();
-            if (enabledScenes.Length == 0 || !string.Equals(NormalizeAssetPath(enabledScenes[0].path), NormalizeAssetPath(settings.bootstrapScenePath), StringComparison.OrdinalIgnoreCase))
-                problems.Add("Build Settings 的第一个场景不是 HybridBootstrap");
+            if (enabledScenes.Length == 0 || !string.Equals(NormalizeAssetPath(enabledScenes[0].path), NormalizeAssetPath(settings.launcherScenePath), StringComparison.OrdinalIgnoreCase))
+                problems.Add("Build Settings 的第一个场景不是 HybridLauncher");
+            ValidateBootPackageCollector(settings, problems);
+            ValidateBootSceneDependencies(settings, problems);
             if (PlayerSettings.GetScriptingBackend(BuildTargetGroup.Android) != ScriptingImplementation.IL2CPP)
                 problems.Add("Android Scripting Backend 不是 IL2CPP");
             return problems;
+        }
+
+        internal static void ValidateBootSceneForBuild()
+        {
+            var problems = new List<string>();
+            ValidateBootSceneDependencies(HybridSettings.instance, problems);
+            if (problems.Count > 0)
+                throw new BuildFailedException(string.Join("\n", problems));
+        }
+
+        static void ValidateBootSceneDependencies(HybridSettings settings, ICollection<string> problems)
+        {
+            var scenePath = NormalizeAssetPath(settings.bootstrapScenePath);
+            if (!File.Exists(ToFullPath(scenePath)))
+                return;
+            foreach (var dependency in AssetDatabase.GetDependencies(scenePath, true))
+            {
+                if (!dependency.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var script = AssetDatabase.LoadAssetAtPath<MonoScript>(dependency);
+                var type = script == null ? null : script.GetClass();
+                if (type != null && string.Equals(type.Assembly.GetName().Name, "Assembly-CSharp", StringComparison.Ordinal))
+                    problems.Add("HybridBootstrap 引用了业务脚本，不能进入 BootPackage: " + dependency);
+            }
         }
 
         static List<string> CollectDeploymentProblemsSafely(HybridSettings settings)
@@ -491,6 +643,35 @@ namespace Native.Editor.Hybrid
                 problems.Add("YooAsset Collector Settings 中缺少 Game Package");
         }
 
+        static void ValidateBootPackageCollector(HybridSettings settings, ICollection<string> problems)
+        {
+            var collector = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(settings.collectorSettingsPath);
+            var packages = collector == null ? null : new SerializedObject(collector).FindProperty("Packages");
+            if (packages == null)
+                return;
+            for (var i = 0; i < packages.arraySize; i++)
+            {
+                var package = packages.GetArrayElementAtIndex(i);
+                if (package.FindPropertyRelative("PackageName")?.stringValue != settings.bootPackageName)
+                    continue;
+                var groups = package.FindPropertyRelative("Groups");
+                if (groups == null || groups.arraySize != 1)
+                {
+                    problems.Add("BootPackage 收集组配置无效");
+                    return;
+                }
+                var collectors = groups.GetArrayElementAtIndex(0).FindPropertyRelative("Collectors");
+                if (collectors == null || collectors.arraySize != 1
+                    || !string.Equals(
+                        NormalizeAssetPath(collectors.GetArrayElementAtIndex(0).FindPropertyRelative("CollectPath")?.stringValue),
+                        NormalizeAssetPath(settings.bootstrapScenePath),
+                        StringComparison.OrdinalIgnoreCase))
+                    problems.Add("BootPackage 未正确收集 HybridBootstrap 场景");
+                return;
+            }
+            problems.Add("YooAsset Collector Settings 中缺少 BootPackage");
+        }
+
         static void ValidateSettings(HybridSettings settings)
         {
             if (!CanUseCurrentUnityVersion(out var unityVersionProblem))
@@ -506,7 +687,11 @@ namespace Native.Editor.Hybrid
                 throw new InvalidOperationException("Business CDN Root 必须是有效的 HTTP/HTTPS 地址");
             if (!HybridAndroidSdk.Validate(settings, out var androidSdkProblem))
                 throw new InvalidOperationException(androidSdkProblem);
-            foreach (var path in new[] { settings.buildPipelineRoot, settings.resourceRoot, settings.bootstrapScenePath, settings.mainScenePath })
+            var bootPackageRemoteRoot = ResolveBootPackageRemoteRoot(settings);
+            if (!Uri.TryCreate(bootPackageRemoteRoot, UriKind.Absolute, out var bootUri)
+                || (bootUri.Scheme != Uri.UriSchemeHttp && bootUri.Scheme != Uri.UriSchemeHttps))
+                throw new InvalidOperationException("BootPackage CDN Root 必须是有效的 HTTP/HTTPS 地址");
+            foreach (var path in new[] { settings.buildPipelineRoot, settings.resourceRoot, settings.launcherScenePath, settings.bootstrapScenePath, settings.mainScenePath })
                 ValidateAssetPath(path);
         }
 
@@ -539,6 +724,10 @@ namespace Native.Editor.Hybrid
             public string mainSceneName;
             public string cacheFolder;
             public int timeoutSeconds;
+            public string bootPackageName;
+            public string bootPackageRemoteRoot;
+            public string bootSceneLocation;
+            public string embeddedBootPackageVersion;
         }
 
         static bool CanUseCurrentUnityVersion(out string problem)
@@ -752,6 +941,11 @@ namespace Native.Editor.Hybrid
         {
             var property = parent.FindPropertyRelative(name) ?? throw new InvalidOperationException("缺少序列化字段: " + name);
             property.intValue = value;
+        }
+        static void SetRelativeBool(SerializedProperty parent, string name, bool value)
+        {
+            var property = parent.FindPropertyRelative(name) ?? throw new InvalidOperationException("缺少序列化字段: " + name);
+            property.boolValue = value;
         }
 
         static IEnumerable<string> ParseLines(string value)
