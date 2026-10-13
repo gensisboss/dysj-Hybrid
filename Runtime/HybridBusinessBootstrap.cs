@@ -30,22 +30,27 @@ namespace DYSJ.HotUpdate.Bootstrap
         const string BusinessSceneBundleRelativePath = "HybridCLR/hybrid_main_scene.bundle";
         const string CachedManifestFile = "business_cached_manifest.json";
         const string DefaultBootPackageName = "BootPackage";
-        const string DefaultBootSceneLocation = "HybridBootstrap";
+        const string DefaultBootCanvasLocation = "HybridBootCanvas";
         const string BootPackageVersionKey = "DYSJ.Hybrid.BootPackage.Version";
 
         [Header("Loading UI")]
         [SerializeField] Slider slider;
         [SerializeField] TMP_Text labPrompt;
         [SerializeField] TMP_Text labProgress;
+        [SerializeField] GameObject fallbackBootCanvas;
 
         float _progress;
+        string _status = string.Empty;
         ResourcePackage _bootPackage;
-        SceneHandle _bootSceneHandle;
+        AssetHandle _bootCanvasHandle;
+        GameObject _bootCanvasInstance;
         bool _bootPackageUsesHostMode;
 
         IEnumerator Start()
         {
             DontDestroyOnLoad(gameObject);
+            BindLoadingView(fallbackBootCanvas);
+            SetLoading("正在准备启动资源...", 0.02f);
 
             BootstrapConfig config;
             try
@@ -58,15 +63,10 @@ namespace DYSJ.HotUpdate.Bootstrap
                 yield break;
             }
 
-#if UNITY_EDITOR
-            yield return LoadBootSceneInEditor(config);
-#else
+#if !UNITY_EDITOR
             yield return InitializeAndLoadBootPackage(config);
-            if (_bootSceneHandle == null || _bootSceneHandle.Status != EOperationStatus.Succeed)
-                yield break;
 #endif
 
-            BindLoadingView();
             SetLoading("正在准备游戏代码...", 0.05f);
 
 #if UNITY_EDITOR
@@ -151,20 +151,6 @@ namespace DYSJ.HotUpdate.Bootstrap
 #endif
         }
 
-        IEnumerator LoadBootSceneInEditor(BootstrapConfig config)
-        {
-            var sceneName = string.IsNullOrWhiteSpace(config.bootSceneLocation)
-                ? DefaultBootSceneLocation
-                : config.bootSceneLocation.Trim();
-            var operation = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Single);
-            if (operation == null)
-            {
-                Fail("无法加载启动界面场景: " + sceneName, null);
-                yield break;
-            }
-            yield return operation;
-        }
-
 #if !UNITY_EDITOR
         IEnumerator InitializeAndLoadBootPackage(BootstrapConfig config)
         {
@@ -203,8 +189,8 @@ namespace DYSJ.HotUpdate.Bootstrap
                         {
                             _bootPackage = hostPackage;
                             _bootPackageUsesHostMode = true;
-                            yield return LoadBootSceneFromPackage(config);
-                            if (_bootSceneHandle != null && _bootSceneHandle.Status == EOperationStatus.Succeed)
+                            yield return LoadBootCanvasFromPackage(config);
+                            if (_bootCanvasInstance != null)
                                 yield break;
                         }
                     }
@@ -212,6 +198,9 @@ namespace DYSJ.HotUpdate.Bootstrap
 
                 Debug.LogWarning("[Hybrid] 缓存启动界面不可用，回退 APK 内置 BootPackage。");
                 yield return DestroyBootPackage(hostPackage);
+                if (_bootPackage == hostPackage)
+                    _bootPackage = null;
+                _bootPackageUsesHostMode = false;
             }
 
             var offlinePackage = YooAssets.CreatePackage(packageName);
@@ -223,7 +212,8 @@ namespace DYSJ.HotUpdate.Bootstrap
             yield return offlineInitialize;
             if (offlineInitialize.Status != EOperationStatus.Succeed)
             {
-                Fail("APK 内置 BootPackage 初始化失败", new InvalidOperationException(offlineInitialize.Error));
+                Debug.LogWarning("[Hybrid] APK 内置 BootPackage 初始化失败，继续使用内置启动界面: " + offlineInitialize.Error);
+                yield return DestroyBootPackage(offlinePackage);
                 yield break;
             }
 
@@ -231,7 +221,8 @@ namespace DYSJ.HotUpdate.Bootstrap
             yield return version;
             if (version.Status != EOperationStatus.Succeed)
             {
-                Fail("APK 内置 BootPackage 缺少版本信息", new InvalidOperationException(version.Error));
+                Debug.LogWarning("[Hybrid] APK 内置 BootPackage 缺少版本信息，继续使用内置启动界面: " + version.Error);
+                yield return DestroyBootPackage(offlinePackage);
                 yield break;
             }
 
@@ -241,24 +232,58 @@ namespace DYSJ.HotUpdate.Bootstrap
             yield return offlineManifest;
             if (offlineManifest.Status != EOperationStatus.Succeed)
             {
-                Fail("APK 内置 BootPackage 清单无效", new InvalidOperationException(offlineManifest.Error));
+                Debug.LogWarning("[Hybrid] APK 内置 BootPackage 清单无效，继续使用内置启动界面: " + offlineManifest.Error);
+                yield return DestroyBootPackage(offlinePackage);
                 yield break;
             }
 
             _bootPackage = offlinePackage;
             _bootPackageUsesHostMode = false;
-            yield return LoadBootSceneFromPackage(config);
+            yield return LoadBootCanvasFromPackage(config);
         }
 
-        IEnumerator LoadBootSceneFromPackage(BootstrapConfig config)
+        IEnumerator LoadBootCanvasFromPackage(BootstrapConfig config)
         {
-            var location = string.IsNullOrWhiteSpace(config.bootSceneLocation)
-                ? DefaultBootSceneLocation
-                : config.bootSceneLocation.Trim();
-            _bootSceneHandle = _bootPackage.LoadSceneAsync(location, LoadSceneMode.Single);
-            yield return _bootSceneHandle;
-            if (_bootSceneHandle.Status != EOperationStatus.Succeed)
-                Fail("BootPackage 无法加载启动界面: " + location, new InvalidOperationException(_bootSceneHandle.LastError));
+            var location = string.IsNullOrWhiteSpace(config.bootCanvasLocation)
+                ? DefaultBootCanvasLocation
+                : config.bootCanvasLocation.Trim();
+            _bootCanvasHandle = _bootPackage.LoadAssetAsync<GameObject>(location);
+            yield return _bootCanvasHandle;
+            if (_bootCanvasHandle.Status != EOperationStatus.Succeed)
+            {
+                Debug.LogWarning("[Hybrid] BootPackage 无法加载 HybridBootCanvas Prefab，继续使用内置界面: " + _bootCanvasHandle.LastError);
+                ReleaseBootCanvasHandle();
+                yield break;
+            }
+
+            var instantiate = _bootCanvasHandle.InstantiateAsync(false);
+            yield return instantiate;
+            if (instantiate.Status != EOperationStatus.Succeed || instantiate.Result == null)
+            {
+                Debug.LogWarning("[Hybrid] HybridBootCanvas Prefab 实例化失败，继续使用内置界面: " + instantiate.Error);
+                ReleaseBootCanvasHandle();
+                yield break;
+            }
+
+            var replacement = instantiate.Result;
+            replacement.name = DefaultBootCanvasLocation;
+            if (!TryBindLoadingView(replacement))
+            {
+                Destroy(replacement);
+                Debug.LogWarning("[Hybrid] HybridBootCanvas Prefab 缺少 Slider、lab_prompt 或 lab_progress，继续使用内置界面。");
+                ReleaseBootCanvasHandle();
+                yield break;
+            }
+
+            _bootCanvasInstance = replacement;
+            SetLoading(_status, _progress);
+            replacement.SetActive(true);
+            if (fallbackBootCanvas != null && fallbackBootCanvas != replacement)
+            {
+                fallbackBootCanvas.SetActive(false);
+                Destroy(fallbackBootCanvas);
+                fallbackBootCanvas = null;
+            }
         }
 
         IEnumerator UpdateBootPackageInBackground(BootstrapConfig config)
@@ -314,19 +339,43 @@ namespace DYSJ.HotUpdate.Bootstrap
         }
 #endif
 
-        void BindLoadingView()
+        void OnDestroy()
         {
-            slider = FindLoadedComponent<Slider>("Slider");
-            labPrompt = FindLoadedComponent<TMP_Text>("lab_prompt");
-            labProgress = FindLoadedComponent<TMP_Text>("lab_progress");
+            ReleaseBootCanvasHandle();
         }
 
-        static T FindLoadedComponent<T>(string objectName) where T : Component
+        void ReleaseBootCanvasHandle()
         {
-            return Resources.FindObjectsOfTypeAll<T>()
+            if (_bootCanvasHandle != null && _bootCanvasHandle.IsValid)
+                _bootCanvasHandle.Release();
+            _bootCanvasHandle = null;
+        }
+
+        void BindLoadingView(GameObject root)
+        {
+            if (!TryBindLoadingView(root))
+                Debug.LogWarning("[Hybrid] 内置 HybridBootCanvas 缺少 Slider、lab_prompt 或 lab_progress。");
+        }
+
+        bool TryBindLoadingView(GameObject root)
+        {
+            if (root == null)
+                return false;
+            var nextSlider = FindNamedComponent<Slider>(root, "Slider");
+            var nextPrompt = FindNamedComponent<TMP_Text>(root, "lab_prompt");
+            var nextProgress = FindNamedComponent<TMP_Text>(root, "lab_progress");
+            if (nextSlider == null || nextPrompt == null || nextProgress == null)
+                return false;
+            slider = nextSlider;
+            labPrompt = nextPrompt;
+            labProgress = nextProgress;
+            return true;
+        }
+
+        static T FindNamedComponent<T>(GameObject root, string objectName) where T : Component
+        {
+            return root.GetComponentsInChildren<T>(true)
                 .FirstOrDefault(item => item != null
-                    && item.gameObject.scene.IsValid()
-                    && item.gameObject.scene.isLoaded
                     && string.Equals(item.gameObject.name, objectName, StringComparison.Ordinal));
         }
 
@@ -532,7 +581,7 @@ namespace DYSJ.HotUpdate.Bootstrap
                     mainSceneName = "Main",
                     timeoutSeconds = 12,
                     bootPackageName = DefaultBootPackageName,
-                    bootSceneLocation = DefaultBootSceneLocation,
+                    bootCanvasLocation = DefaultBootCanvasLocation,
                 };
             }
             var config = JsonUtility.FromJson<BootstrapConfig>(asset.text)
@@ -541,8 +590,8 @@ namespace DYSJ.HotUpdate.Bootstrap
                 config.mainSceneName = "Main";
             if (string.IsNullOrWhiteSpace(config.bootPackageName))
                 config.bootPackageName = DefaultBootPackageName;
-            if (string.IsNullOrWhiteSpace(config.bootSceneLocation))
-                config.bootSceneLocation = DefaultBootSceneLocation;
+            if (string.IsNullOrWhiteSpace(config.bootCanvasLocation))
+                config.bootCanvasLocation = DefaultBootCanvasLocation;
             if (config.timeoutSeconds <= 0)
                 config.timeoutSeconds = 12;
             return config;
@@ -701,6 +750,7 @@ namespace DYSJ.HotUpdate.Bootstrap
 
         void SetLoading(string status, float progress)
         {
+            _status = status ?? string.Empty;
             _progress = Mathf.Clamp01(progress);
             if (slider != null)
                 slider.SetValueWithoutNotify(_progress);
@@ -720,7 +770,7 @@ namespace DYSJ.HotUpdate.Bootstrap
             public int timeoutSeconds;
             public string bootPackageName;
             public string bootPackageRemoteRoot;
-            public string bootSceneLocation;
+            public string bootCanvasLocation;
             public string embeddedBootPackageVersion;
         }
 

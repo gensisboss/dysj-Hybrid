@@ -23,8 +23,9 @@ namespace Native.Editor.Hybrid
         public int androidCompileSdkVersion => 31;
         public string androidBuildToolsVersion => "30.0.2";
         public string businessAssemblyName => "Assembly-CSharp";
-        public string launcherScenePath => "Assets/_Native/Runtime/Hybrid/HybridLauncher.unity";
         public string bootstrapScenePath => "Assets/_Native/Runtime/Hybrid/HybridBootstrap.unity";
+        public string bootCanvasPrefabPath => "Assets/_Native/Runtime/Hybrid/HybridBootCanvas.prefab";
+        public string obsoleteLauncherScenePath => "Assets/_Native/Runtime/Hybrid/HybridLauncher.unity";
         public string bootPackageName => "BootPackage";
         public string buildAdapterPath => "Assets/_Native/Editor/BuildYooAssetsAndroid.cs";
         public string buildPipelineRoot => "Assets/Editor/HybridCLR";

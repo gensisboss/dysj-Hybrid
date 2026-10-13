@@ -18,7 +18,8 @@ namespace Native.Editor.Hybrid
                 return;
             HybridRuntimeCompatibility.EnsureInstalledRuntime();
             HybridAndroidSdk.EnsureHybridClrRuntimeLinkXml();
-            HybridDeployer.ValidateBootSceneForBuild();
+            HybridDeployer.SyncHybridBootCanvasPrefab();
+            HybridDeployer.ValidateBootVisualForBuild();
             Invoke("GenerateAllAndPrepareHostBuild");
             HybridAndroidSdk.StampEmbeddedBusinessVersion(HybridSettings.instance);
             HybridAndroidSdk.SyncBootstrapResources(HybridSettings.instance, true);
@@ -79,6 +80,8 @@ namespace Native.Editor.Hybrid
 
         public static bool BuildBootPackageHotUpdate(string version)
         {
+            HybridDeployer.SyncHybridBootCanvasPrefab();
+            HybridDeployer.ValidateBootVisualForBuild();
             return InvokeBusinessBuilder("BuildBootPackageHotUpdate", version) is true;
         }
 
@@ -133,7 +136,7 @@ namespace Native.Editor.Hybrid
     [InitializeOnLoad]
     internal static class HybridBuildPlayerHandler
     {
-        const string LauncherScenePath = "Assets/_Native/Runtime/Hybrid/HybridLauncher.unity";
+        const string BootstrapScenePath = "Assets/_Native/Runtime/Hybrid/HybridBootstrap.unity";
 
         static HybridBuildPlayerHandler()
         {
@@ -146,9 +149,9 @@ namespace Native.Editor.Hybrid
             {
                 Debug.Log("[Hybrid] Unity Build 已接管：正在准备默认业务程序集与 HybridCLR 主包资源。");
                 HybridBuildBridge.PrepareHostBuild(options.target);
-                options.scenes = new[] { LauncherScenePath };
+                options.scenes = new[] { BootstrapScenePath };
                 options.options |= BuildOptions.CleanBuildCache;
-                Debug.Log("[Hybrid] APK 仅包含 HybridLauncher；HybridBootstrap 从内置/缓存 BootPackage 加载，Main 在业务 DLL 加载后打开。");
+                Debug.Log("[Hybrid] APK 仅包含内置 HybridBootstrap；HybridBootCanvas 视觉 Prefab 从 BootPackage 加载，Main 在业务 DLL 加载后打开。");
             }
 
             BuildPlayerWindow.DefaultBuildMethods.BuildPlayer(options);

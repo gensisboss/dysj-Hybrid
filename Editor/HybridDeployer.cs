@@ -6,9 +6,11 @@ using System.Reflection;
 using System.Text;
 using UnityEditor;
 using UnityEditor.Build;
+using UnityEditor.SceneManagement;
 using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Native.Editor.Hybrid
 {
@@ -121,6 +123,7 @@ namespace Native.Editor.Hybrid
 
                 GenerateFiles(settings);
                 AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                SyncHybridBootCanvasPrefab();
                 ConfigureHybridClrSettings(settings);
                 WriteBusinessBootstrapConfig(settings);
                 EnsureBootstrapScenes(settings);
@@ -158,8 +161,8 @@ namespace Native.Editor.Hybrid
             WriteTemplate("HybridCLREditorTools.asmdef.txt", CombineAssetPath(settings.buildPipelineRoot, "HybridCLREditorTools.asmdef"), replacements);
             WriteTemplate("HybridCLRBuildPipeline.cs.txt", CombineAssetPath(settings.buildPipelineRoot, "HybridCLRBuildPipeline.cs"), replacements);
             WriteTemplate("BuildYooAssetsAndroid.cs.txt", settings.buildAdapterPath, replacements);
-            WriteTemplate("HybridLauncher.unity.txt", settings.launcherScenePath, replacements);
             WriteTemplate("HybridBootstrap.unity.txt", settings.bootstrapScenePath, replacements);
+            AssetDatabase.DeleteAsset(settings.obsoleteLauncherScenePath);
 
             EnsureAssetDirectory(settings.resourceRoot);
         }
@@ -181,6 +184,103 @@ namespace Native.Editor.Hybrid
             Directory.CreateDirectory(directory);
 
             WriteIfChanged(fullDestination, content);
+        }
+
+        public static void SyncHybridBootCanvasPrefab()
+        {
+            var settings = HybridSettings.instance;
+            var scenePath = NormalizeAssetPath(settings.bootstrapScenePath);
+            if (!File.Exists(ToFullPath(scenePath)))
+                throw new FileNotFoundException("HybridBootstrap 场景不存在", scenePath);
+
+            var scene = SceneManager.GetSceneByPath(scenePath);
+            var openedByTool = !scene.IsValid() || !scene.isLoaded;
+            var previousActiveScene = SceneManager.GetActiveScene();
+            Scene stagingScene = default;
+            GameObject clone = null;
+            try
+            {
+                if (openedByTool)
+                    scene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Additive);
+                if (scene.isDirty)
+                    throw new InvalidOperationException("HybridBootstrap 场景存在未保存修改，请先保存场景再生成启动界面资源包。");
+
+                var matches = scene.GetRootGameObjects()
+                    .Where(item => string.Equals(item.name, "HybridBootCanvas", StringComparison.Ordinal))
+                    .ToArray();
+                if (matches.Length != 1)
+                    throw new InvalidOperationException("HybridBootstrap 场景必须且只能包含一个名为 HybridBootCanvas 的根对象。");
+
+                stagingScene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+                clone = UnityEngine.Object.Instantiate(matches[0]);
+                clone.name = "HybridBootCanvas";
+                SceneManager.MoveGameObjectToScene(clone, stagingScene);
+
+                foreach (var behaviour in clone.GetComponentsInChildren<MonoBehaviour>(true))
+                {
+                    if (behaviour == null)
+                        continue;
+                    var type = behaviour.GetType();
+                    if (string.Equals(type.FullName, "DYSJ.HotUpdate.Bootstrap.HybridBusinessBootstrap", StringComparison.Ordinal))
+                    {
+                        UnityEngine.Object.DestroyImmediate(behaviour);
+                        continue;
+                    }
+                    if (string.Equals(type.Assembly.GetName().Name, "Assembly-CSharp", StringComparison.Ordinal))
+                        throw new InvalidOperationException("HybridBootCanvas 包含业务脚本，不能进入 BootPackage: " + type.FullName);
+                }
+                if (GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(clone) > 0)
+                    throw new InvalidOperationException("HybridBootCanvas 包含丢失的脚本引用，不能进入 BootPackage。");
+
+                RequireSingleNamedComponent(clone, "Slider", "UnityEngine.UI.Slider");
+                RequireSingleNamedComponent(clone, "lab_prompt", "TMPro.TMP_Text");
+                RequireSingleNamedComponent(clone, "lab_progress", "TMPro.TMP_Text");
+
+                var prefabPath = NormalizeAssetPath(settings.bootCanvasPrefabPath);
+                EnsureAssetDirectory(Path.GetDirectoryName(prefabPath)?.Replace('\\', '/') ?? "Assets/_Native/Runtime/Hybrid");
+                var prefab = PrefabUtility.SaveAsPrefabAsset(clone, prefabPath, out var saved);
+                if (!saved || prefab == null)
+                    throw new InvalidOperationException("生成 HybridBootCanvas Prefab 失败: " + prefabPath);
+                AssetDatabase.ImportAsset(prefabPath, ImportAssetOptions.ForceSynchronousImport);
+                Debug.Log("[Hybrid] 已同步启动界面视觉 Prefab: " + prefabPath);
+            }
+            finally
+            {
+                if (clone != null)
+                    UnityEngine.Object.DestroyImmediate(clone);
+                if (stagingScene.IsValid())
+                    EditorSceneManager.CloseScene(stagingScene, true);
+                if (openedByTool && scene.IsValid() && scene.isLoaded)
+                    EditorSceneManager.CloseScene(scene, true);
+                if (previousActiveScene.IsValid() && previousActiveScene.isLoaded)
+                    SceneManager.SetActiveScene(previousActiveScene);
+            }
+        }
+
+        static void RequireSingleNamedComponent(GameObject root, string objectName, string componentBaseType)
+        {
+            var matches = root.GetComponentsInChildren<Transform>(true)
+                .Where(item => string.Equals(item.name, objectName, StringComparison.Ordinal))
+                .Select(item => item.gameObject)
+                .ToArray();
+            if (matches.Length != 1)
+                throw new InvalidOperationException($"HybridBootCanvas 必须且只能包含一个名为 {objectName} 的对象。");
+            var hasRequiredComponent = matches[0].GetComponents<Component>()
+                .Where(component => component != null)
+                .Any(component => IsTypeOrBaseType(component.GetType(), componentBaseType));
+            if (!hasRequiredComponent)
+                throw new InvalidOperationException($"HybridBootCanvas/{objectName} 缺少组件 {componentBaseType}。");
+        }
+
+        static bool IsTypeOrBaseType(Type type, string fullName)
+        {
+            while (type != null)
+            {
+                if (string.Equals(type.FullName, fullName, StringComparison.Ordinal))
+                    return true;
+                type = type.BaseType;
+            }
+            return false;
         }
 
         static void ConfigureHybridClrSettings(HybridSettings settings)
@@ -241,7 +341,7 @@ namespace Native.Editor.Hybrid
                 timeoutSeconds = Math.Max(3, Math.Min(60, settings.businessRemoteTimeoutSeconds)),
                 bootPackageName = settings.bootPackageName,
                 bootPackageRemoteRoot = (settings.bootPackageRemoteRoot ?? string.Empty).Trim().TrimEnd('/'),
-                bootSceneLocation = Path.GetFileNameWithoutExtension(settings.bootstrapScenePath),
+                bootCanvasLocation = Path.GetFileNameWithoutExtension(settings.bootCanvasPrefabPath),
                 embeddedBootPackageVersion = string.Empty,
             };
             WriteIfChanged(ToFullPath(assetPath), JsonUtility.ToJson(config, true) + Environment.NewLine);
@@ -284,24 +384,20 @@ namespace Native.Editor.Hybrid
 
         static void EnsureBootstrapScenes(HybridSettings settings)
         {
-            var launcher = NormalizeAssetPath(settings.launcherScenePath);
             var bootstrap = NormalizeAssetPath(settings.bootstrapScenePath);
             var main = NormalizeAssetPath(settings.mainScenePath);
-            if (!File.Exists(ToFullPath(launcher)))
-                throw new FileNotFoundException("内置启动入口场景不存在", launcher);
             if (!File.Exists(ToFullPath(bootstrap)))
-                throw new FileNotFoundException("热更新启动界面场景不存在", bootstrap);
+                throw new FileNotFoundException("内置启动场景不存在", bootstrap);
             if (!File.Exists(ToFullPath(main)))
                 throw new FileNotFoundException("游戏主场景不存在", main);
 
             var scenes = new List<EditorBuildSettingsScene>
             {
-                new EditorBuildSettingsScene(launcher, true),
                 new EditorBuildSettingsScene(bootstrap, true),
                 new EditorBuildSettingsScene(main, true),
             };
             scenes.AddRange(EditorBuildSettings.scenes.Where(scene =>
-                !string.Equals(NormalizeAssetPath(scene.path), launcher, StringComparison.OrdinalIgnoreCase)
+                !string.Equals(NormalizeAssetPath(scene.path), NormalizeAssetPath(settings.obsoleteLauncherScenePath), StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(NormalizeAssetPath(scene.path), bootstrap, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(NormalizeAssetPath(scene.path), main, StringComparison.OrdinalIgnoreCase)));
             EditorBuildSettings.scenes = scenes.ToArray();
@@ -402,7 +498,7 @@ namespace Native.Editor.Hybrid
             }
 
             SetRelativeString(bootPackage, "PackageName", settings.bootPackageName);
-            SetRelativeString(bootPackage, "PackageDesc", "Hot-update bootstrap scene");
+            SetRelativeString(bootPackage, "PackageDesc", "Hot-update bootstrap visual content");
             SetRelativeBool(bootPackage, "EnableAddressable", false);
             SetRelativeBool(bootPackage, "SupportExtensionless", true);
             SetRelativeBool(bootPackage, "LocationToLower", true);
@@ -415,23 +511,23 @@ namespace Native.Editor.Hybrid
             groups.arraySize = 1;
             var group = groups.GetArrayElementAtIndex(0);
             SetRelativeString(group, "GroupName", "bootstrap");
-            SetRelativeString(group, "GroupDesc", "Hybrid bootstrap scene and visual dependencies");
+            SetRelativeString(group, "GroupDesc", "HybridBootCanvas prefab and visual dependencies");
             SetRelativeString(group, "AssetTags", "bootstrap");
             SetRelativeString(group, "ActiveRuleName", "EnableGroup");
 
             var collectors = group.FindPropertyRelative("Collectors")
                 ?? throw new InvalidOperationException("BootPackage bootstrap Group 缺少 Collectors 字段");
             collectors.arraySize = 1;
-            var sceneCollector = collectors.GetArrayElementAtIndex(0);
-            var scenePath = NormalizeAssetPath(settings.bootstrapScenePath);
-            SetRelativeString(sceneCollector, "CollectPath", scenePath);
-            SetRelativeString(sceneCollector, "CollectorGUID", AssetDatabase.AssetPathToGUID(scenePath));
-            SetRelativeInt(sceneCollector, "CollectorType", 0);
-            SetRelativeString(sceneCollector, "AddressRuleName", "AddressByFileName");
-            SetRelativeString(sceneCollector, "PackRuleName", "PackSeparately");
-            SetRelativeString(sceneCollector, "FilterRuleName", "CollectScene");
-            SetRelativeString(sceneCollector, "AssetTags", "bootstrap");
-            SetRelativeString(sceneCollector, "UserData", string.Empty);
+            var prefabCollector = collectors.GetArrayElementAtIndex(0);
+            var prefabPath = NormalizeAssetPath(settings.bootCanvasPrefabPath);
+            SetRelativeString(prefabCollector, "CollectPath", prefabPath);
+            SetRelativeString(prefabCollector, "CollectorGUID", AssetDatabase.AssetPathToGUID(prefabPath));
+            SetRelativeInt(prefabCollector, "CollectorType", 0);
+            SetRelativeString(prefabCollector, "AddressRuleName", "AddressByFileName");
+            SetRelativeString(prefabCollector, "PackRuleName", "PackSeparately");
+            SetRelativeString(prefabCollector, "FilterRuleName", "CollectPrefab");
+            SetRelativeString(prefabCollector, "AssetTags", "bootstrap");
+            SetRelativeString(prefabCollector, "UserData", string.Empty);
         }
 
         public static bool ValidateProject(bool showDialog)
@@ -471,7 +567,6 @@ namespace Native.Editor.Hybrid
                              "HybridCLRBuildPipeline.cs.txt",
                              "HybridCLRGetIl2CppFolderHook.cs.txt",
                              "BuildYooAssetsAndroid.cs.txt",
-                             "HybridLauncher.unity.txt",
                              "HybridBootstrap.unity.txt",
                          })
                     CheckPackageFile(CombineAssetPath(TemplateRelativeRoot, template), problems);
@@ -559,41 +654,41 @@ namespace Native.Editor.Hybrid
                 problems.Add(linkXmlProblem);
             AddAndroidSdkProblem(settings, problems);
             CheckFile(settings.buildPipelineRoot + "/HybridCLRBuildPipeline.cs", problems);
-            CheckFile(settings.launcherScenePath, problems);
             CheckFile(settings.bootstrapScenePath, problems);
+            CheckFile(settings.bootCanvasPrefabPath, problems);
             CheckPackageFile("Runtime/HybridBusinessBootstrap.cs", problems);
             CheckFile($"Assets/Resources/{(settings.runtimeResourcePrefix ?? string.Empty).Trim('/')}/business_bootstrap_config.json", problems);
             var enabledScenes = EditorBuildSettings.scenes.Where(scene => scene.enabled).ToArray();
-            if (enabledScenes.Length == 0 || !string.Equals(NormalizeAssetPath(enabledScenes[0].path), NormalizeAssetPath(settings.launcherScenePath), StringComparison.OrdinalIgnoreCase))
-                problems.Add("Build Settings 的第一个场景不是 HybridLauncher");
+            if (enabledScenes.Length == 0 || !string.Equals(NormalizeAssetPath(enabledScenes[0].path), NormalizeAssetPath(settings.bootstrapScenePath), StringComparison.OrdinalIgnoreCase))
+                problems.Add("Build Settings 的第一个场景不是 HybridBootstrap");
             ValidateBootPackageCollector(settings, problems);
-            ValidateBootSceneDependencies(settings, problems);
+            ValidateBootVisualDependencies(settings, problems);
             if (PlayerSettings.GetScriptingBackend(BuildTargetGroup.Android) != ScriptingImplementation.IL2CPP)
                 problems.Add("Android Scripting Backend 不是 IL2CPP");
             return problems;
         }
 
-        internal static void ValidateBootSceneForBuild()
+        internal static void ValidateBootVisualForBuild()
         {
             var problems = new List<string>();
-            ValidateBootSceneDependencies(HybridSettings.instance, problems);
+            ValidateBootVisualDependencies(HybridSettings.instance, problems);
             if (problems.Count > 0)
                 throw new BuildFailedException(string.Join("\n", problems));
         }
 
-        static void ValidateBootSceneDependencies(HybridSettings settings, ICollection<string> problems)
+        static void ValidateBootVisualDependencies(HybridSettings settings, ICollection<string> problems)
         {
-            var scenePath = NormalizeAssetPath(settings.bootstrapScenePath);
-            if (!File.Exists(ToFullPath(scenePath)))
+            var prefabPath = NormalizeAssetPath(settings.bootCanvasPrefabPath);
+            if (!File.Exists(ToFullPath(prefabPath)))
                 return;
-            foreach (var dependency in AssetDatabase.GetDependencies(scenePath, true))
+            foreach (var dependency in AssetDatabase.GetDependencies(prefabPath, true))
             {
                 if (!dependency.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
                     continue;
                 var script = AssetDatabase.LoadAssetAtPath<MonoScript>(dependency);
                 var type = script == null ? null : script.GetClass();
                 if (type != null && string.Equals(type.Assembly.GetName().Name, "Assembly-CSharp", StringComparison.Ordinal))
-                    problems.Add("HybridBootstrap 引用了业务脚本，不能进入 BootPackage: " + dependency);
+                    problems.Add("HybridBootCanvas 引用了业务脚本，不能进入 BootPackage: " + dependency);
             }
         }
 
@@ -661,12 +756,22 @@ namespace Native.Editor.Hybrid
                     return;
                 }
                 var collectors = groups.GetArrayElementAtIndex(0).FindPropertyRelative("Collectors");
-                if (collectors == null || collectors.arraySize != 1
+                var collectorItem = collectors != null && collectors.arraySize == 1
+                    ? collectors.GetArrayElementAtIndex(0)
+                    : null;
+                var prefabPath = NormalizeAssetPath(settings.bootCanvasPrefabPath);
+                var expectedGuid = AssetDatabase.AssetPathToGUID(prefabPath);
+                if (collectorItem == null
+                    || string.IsNullOrWhiteSpace(expectedGuid)
                     || !string.Equals(
-                        NormalizeAssetPath(collectors.GetArrayElementAtIndex(0).FindPropertyRelative("CollectPath")?.stringValue),
-                        NormalizeAssetPath(settings.bootstrapScenePath),
-                        StringComparison.OrdinalIgnoreCase))
-                    problems.Add("BootPackage 未正确收集 HybridBootstrap 场景");
+                        NormalizeAssetPath(collectorItem.FindPropertyRelative("CollectPath")?.stringValue),
+                        prefabPath,
+                        StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(collectorItem.FindPropertyRelative("CollectorGUID")?.stringValue, expectedGuid, StringComparison.Ordinal)
+                    || !string.Equals(collectorItem.FindPropertyRelative("AddressRuleName")?.stringValue, "AddressByFileName", StringComparison.Ordinal)
+                    || !string.Equals(collectorItem.FindPropertyRelative("PackRuleName")?.stringValue, "PackSeparately", StringComparison.Ordinal)
+                    || !string.Equals(collectorItem.FindPropertyRelative("FilterRuleName")?.stringValue, "CollectPrefab", StringComparison.Ordinal))
+                    problems.Add("BootPackage 未正确收集 HybridBootCanvas Prefab");
                 return;
             }
             problems.Add("YooAsset Collector Settings 中缺少 BootPackage");
@@ -691,7 +796,7 @@ namespace Native.Editor.Hybrid
             if (!Uri.TryCreate(bootPackageRemoteRoot, UriKind.Absolute, out var bootUri)
                 || (bootUri.Scheme != Uri.UriSchemeHttp && bootUri.Scheme != Uri.UriSchemeHttps))
                 throw new InvalidOperationException("BootPackage CDN Root 必须是有效的 HTTP/HTTPS 地址");
-            foreach (var path in new[] { settings.buildPipelineRoot, settings.resourceRoot, settings.launcherScenePath, settings.bootstrapScenePath, settings.mainScenePath })
+            foreach (var path in new[] { settings.buildPipelineRoot, settings.resourceRoot, settings.bootstrapScenePath, settings.bootCanvasPrefabPath, settings.mainScenePath })
                 ValidateAssetPath(path);
         }
 
@@ -726,7 +831,7 @@ namespace Native.Editor.Hybrid
             public int timeoutSeconds;
             public string bootPackageName;
             public string bootPackageRemoteRoot;
-            public string bootSceneLocation;
+            public string bootCanvasLocation;
             public string embeddedBootPackageVersion;
         }
 
