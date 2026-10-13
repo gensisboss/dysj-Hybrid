@@ -1,9 +1,13 @@
 {
   "name": "com.dysj.hybrid",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "displayName": "DYSJ Hybrid Hot Update",
   "description": "Project recovery and publishing tools for the DYSJ HybridCLR business hot-update workflow.",
   "unity": "2022.1",
+  "dependencies": {
+    "com.unity.textmeshpro": "3.0.6",
+    "com.unity.ugui": "1.0.0"
+  },
   "author": {
     "name": "DYSJ"
   }

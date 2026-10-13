@@ -6,9 +6,11 @@ using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using TMPro;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 namespace DYSJ.HotUpdate.Bootstrap
 {
@@ -27,12 +29,17 @@ namespace DYSJ.HotUpdate.Bootstrap
         const string BusinessSceneBundleRelativePath = "HybridCLR/hybrid_main_scene.bundle";
         const string CachedManifestFile = "business_cached_manifest.json";
 
-        string _status = "正在准备游戏代码...";
-        string _error;
+        [Header("Loading UI")]
+        [SerializeField] Slider slider;
+        [SerializeField] TMP_Text labPrompt;
+        [SerializeField] TMP_Text labProgress;
+
+        float _progress;
 
         IEnumerator Start()
         {
             DontDestroyOnLoad(gameObject);
+            SetLoading("正在准备游戏代码...", 0.05f);
 
 #if UNITY_EDITOR
             yield return LoadMainScene("Main");
@@ -42,6 +49,7 @@ namespace DYSJ.HotUpdate.Bootstrap
             {
                 config = LoadConfig();
                 LoadAotMetadata();
+                SetLoading("正在校验内置资源...", 0.2f);
             }
             catch (Exception e)
             {
@@ -55,6 +63,7 @@ namespace DYSJ.HotUpdate.Bootstrap
                 Fail("APK 缺少可用的默认业务代码", null);
                 yield break;
             }
+            SetLoading("正在检查业务更新...", 0.3f);
 
             byte[] assemblyBytes = null;
             var remoteMatchesEmbedded = false;
@@ -82,7 +91,7 @@ namespace DYSJ.HotUpdate.Bootstrap
 
             try
             {
-                _status = "正在加载游戏代码...";
+                SetLoading("正在加载游戏代码...", 0.92f);
                 var preloaded = FindLoadedBusinessAssembly();
                 if (preloaded != null)
                 {
@@ -110,7 +119,7 @@ namespace DYSJ.HotUpdate.Bootstrap
             Action<byte[]> onLoaded,
             Action onSameAsEmbedded)
         {
-            _status = "正在检查业务更新...";
+            SetLoading("正在检查业务更新...", 0.32f);
             var root = config.remoteRoot.Trim().TrimEnd('/');
             var manifestName = string.IsNullOrWhiteSpace(config.latestManifest)
                 ? "business_latest.json"
@@ -129,7 +138,12 @@ namespace DYSJ.HotUpdate.Bootstrap
                 request.SetRequestHeader("Cache-Control", "no-cache, no-store");
                 request.SetRequestHeader("Pragma", "no-cache");
                 request.timeout = Mathf.Clamp(config.timeoutSeconds, 3, 60);
-                yield return request.SendWebRequest();
+                var operation = request.SendWebRequest();
+                while (!operation.isDone)
+                {
+                    SetLoading("正在检查业务更新...", Mathf.Lerp(0.32f, 0.4f, request.downloadProgress));
+                    yield return null;
+                }
                 if (request.result != UnityWebRequest.Result.Success)
                 {
                     Debug.LogWarning("[Hybrid] 获取业务更新清单失败，尝试本地缓存: " + request.error);
@@ -158,12 +172,18 @@ namespace DYSJ.HotUpdate.Bootstrap
 
             Debug.Log($"[Hybrid] 发现不同版本业务代码: embedded={embeddedVersion}, remote={manifest.version}");
 
-            _status = "正在下载业务更新 " + manifest.version + "...";
+            var downloadStatus = "正在下载业务更新 " + manifest.version + "...";
+            SetLoading(downloadStatus, 0.42f);
             byte[] bytes;
             using (var request = UnityWebRequest.Get(root + "/" + manifest.fileName))
             {
                 request.timeout = Mathf.Clamp(config.timeoutSeconds, 3, 60);
-                yield return request.SendWebRequest();
+                var operation = request.SendWebRequest();
+                while (!operation.isDone)
+                {
+                    SetLoading(downloadStatus, Mathf.Lerp(0.42f, 0.82f, request.downloadProgress));
+                    yield return null;
+                }
                 if (request.result != UnityWebRequest.Result.Success)
                 {
                     Debug.LogWarning("[Hybrid] 下载业务代码失败，尝试本地缓存: " + request.error);
@@ -174,6 +194,7 @@ namespace DYSJ.HotUpdate.Bootstrap
 
             try
             {
+                SetLoading("正在校验业务更新...", 0.86f);
                 ValidateAssemblyBytes(manifest, bytes);
                 SaveCache(config, manifestJson, manifest, bytes);
                 Debug.Log("[Hybrid] 使用远端业务代码: " + manifest.version);
@@ -382,7 +403,7 @@ namespace DYSJ.HotUpdate.Bootstrap
 
         IEnumerator LoadMainScene(string sceneName)
         {
-            _status = "正在进入游戏...";
+            SetLoading("正在进入游戏...", 0.95f);
             var expectedSceneName = string.IsNullOrWhiteSpace(sceneName) ? "Main" : sceneName;
 #if UNITY_EDITOR
             var operation = SceneManager.LoadSceneAsync(expectedSceneName);
@@ -431,7 +452,11 @@ namespace DYSJ.HotUpdate.Bootstrap
                 yield break;
             }
             while (!operation.isDone)
+            {
+                SetLoading("正在进入游戏...", Mathf.Lerp(0.95f, 1f, Mathf.Clamp01(operation.progress / 0.9f)));
                 yield return null;
+            }
+            SetLoading("正在进入游戏...", 1f);
 #if !UNITY_EDITOR
             sceneBundle.Unload(false);
 #endif
@@ -440,26 +465,20 @@ namespace DYSJ.HotUpdate.Bootstrap
 
         void Fail(string message, Exception exception)
         {
-            _error = exception == null ? message : message + "\n" + exception.Message;
+            var error = exception == null ? message : message + "\n" + exception.Message;
+            SetLoading(error, _progress);
             Debug.LogError("[Hybrid] " + message + (exception == null ? string.Empty : ": " + exception));
         }
 
-        void OnGUI()
+        void SetLoading(string status, float progress)
         {
-            if (string.IsNullOrEmpty(_status) && string.IsNullOrEmpty(_error))
-                return;
-            var style = new GUIStyle(GUI.skin.label)
-            {
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = Mathf.Clamp(Screen.width / 28, 18, 36),
-                wordWrap = true,
-                normal = { textColor = Color.white }
-            };
-            GUI.color = new Color(0.07f, 0.08f, 0.1f, 1f);
-            GUI.DrawTexture(new Rect(0f, 0f, Screen.width, Screen.height), Texture2D.whiteTexture);
-            GUI.color = Color.white;
-            GUI.Label(new Rect(Screen.width * 0.08f, Screen.height * 0.35f, Screen.width * 0.84f, Screen.height * 0.3f),
-                string.IsNullOrEmpty(_error) ? _status : _error, style);
+            _progress = Mathf.Clamp01(progress);
+            if (slider != null)
+                slider.SetValueWithoutNotify(_progress);
+            if (labProgress != null)
+                labProgress.text = Mathf.RoundToInt(_progress * 100f) + "%";
+            if (labPrompt != null)
+                labPrompt.text = status;
         }
 
         [Serializable]

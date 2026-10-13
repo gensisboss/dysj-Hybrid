@@ -1,7 +1,10 @@
 {
     "name": "Hybrid.Bootstrap",
     "rootNamespace": "DYSJ.HotUpdate.Bootstrap",
-    "references": [],
+    "references": [
+        "Unity.TextMeshPro",
+        "UnityEngine.UI"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
